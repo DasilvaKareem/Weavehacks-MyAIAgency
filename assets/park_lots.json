@@ -26,6 +26,7 @@
     { "id": "incubator",  "name": "Startup Incubator",   "model": "3Story_Balcony.glb", "sign": null, "x": 0,   "z": -8,  "awning": [90, 200, 210],  "blurb": "At the Incubator you mapped your business model canvas.",
       "tasks": ["value_prop", "channels", "relationships", "key_resources", "key_activities", "partnerships", "cost_structure"] },
     { "id": "ventures",   "name": "Apex Ventures",       "model": "6Story_Stack.glb",   "sign": null, "x": -12, "z": 4,   "awning": [60, 90, 140],   "task": "raise_round", "blurb": "Apex Ventures - bring a complete pitch and walk out with a check." },
+    { "id": "angel",      "name": "Angel Investor",      "model": "2Story_Columns.glb", "sign": null, "x": -8, "z": -40, "awning": [210, 180, 90],  "task": "seed", "reward": 5000, "blurb": "Apex's seed desk loved the pitch and wired you $5,000 to get off the ground — your first outside money." },
     { "id": "outfitters", "name": "The Outfitters",      "model": "2Story_Balcony.glb", "sign": null, "x": 12,  "z": 4,   "awning": [180, 120, 200], "store": "outfit", "blurb": "The Outfitters - change your look and pick up a sharp new suit." },
     { "id": "staffing",   "name": "TalentWorks Staffing","model": "3Story_Slim.glb",    "sign": null, "x": 8,   "z": 8,   "awning": [70, 140, 190],  "store": "hire",   "blurb": "TalentWorks - browse AI talent and bring someone on board." },
 

@@ -8,6 +8,7 @@ from .animator_tools import load_animator_tools
 from .blogger_tools import load_blogger_tools
 from .bus_tools import load_bus_tools
 from .company_fs import load_fs_tools
+from .delegation import load_delegation_tools
 from .composio_tools import load_composio_tools
 from .daytona_tools import load_daytona_tools
 from .designer_tools import load_designer_tools
@@ -23,6 +24,8 @@ def _local_tools(role: str, agent_id: str | None, agent_name: str) -> list:
     # Every agent gets the real-time Redis comms bus (when REDIS_URL is set), just
     # like the shared drive — so any agent can message any teammate, profiled or not.
     tools += load_bus_tools(agent_id, agent_name, role)
+    # …and can hand a subtask to another specialist and get the result back.
+    tools += load_delegation_tools(agent_id, agent_name, role)
     if not config.role_profile(role):
         return tools
     tools += load_exec_tools()

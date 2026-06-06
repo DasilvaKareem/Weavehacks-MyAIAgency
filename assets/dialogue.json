@@ -11,7 +11,31 @@
       ]
     },
 
+    "seed": {
+      "who": "Angel Investor",
+      "lines": [
+        "Come in, take a seat. I'm an investor at Apex Ventures — I run our seed desk, the early bets the partners won't touch yet.",
+        "I write the first checks, before there's any proof. Most don't make it. The ones that do are why I do this.",
+        "I don't need a deck — I need conviction. Look me in the eye and pitch me: what are you building, and why should I fund it?"
+      ]
+    },
+
     "raise_round":    { "who": "VC Partner",    "lines": ["Bring me a complete pitch and we'll talk a check."] },
+
+    "outfit": {
+      "who": "Tailor",
+      "lines": [
+        "Welcome to The Outfitters — finest threads this side of downtown.",
+        "Step up to the mirror and let's put a look together."
+      ]
+    },
+    "hire": {
+      "who": "Recruiter",
+      "lines": [
+        "Welcome to TalentWorks. Every role you could need, ready to start today.",
+        "Pull up a chair — let's find the right hire for your team."
+      ]
+    },
 
     "customer":       { "who": "Chamber Clerk",  "lines": ["Welcome in. Let's get you on the books - who exactly are you building this for?"] },
     "competitors":    { "who": "Research Analyst", "lines": ["Smart founders know the field. So tell me - who are you up against?"] },

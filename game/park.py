@@ -73,6 +73,9 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "incubator": (10, 7),
             # Apex Ventures (the VC firm) on its own downtown block in the cluster.
             "ventures": (12, 9),
+            # The Angel Investor (Apex's seed desk) — one block north of spawn, on the
+            # walk into downtown, clear of the parks so you find it first.
+            "angel": (10, 8),
             # Storefronts: The Outfitters by the brand studio; staffing up north.
             "outfitters": (7, 9), "staffing": (11, 7)}
 

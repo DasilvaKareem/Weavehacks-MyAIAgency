@@ -116,6 +116,14 @@ class Game:
         self.robin = Character(name=COFOUNDER_NAME, role="Co-founder", x=0.0, z=0.0,
                                color=pr.Color(90, 210, 230, 255), dept="Founder",
                                model="Suit_Male.gltf", yaw=180.0)
+        # Your first intern: hangs out in a city park (Founders Green) with a "!"
+        # overhead. Walk up + E in the park to take them on — they join the company
+        # for free. Positioned/bound to its park in _enter_park; gated on the
+        # "intern" quest so they vanish once hired (and stay gone after a restart).
+        self.intern = Character(name="Eager Intern", role="Intern", x=0.0, z=0.0,
+                                color=pr.Color(150, 210, 120, 255), dept="Operations",
+                                model="Casual_Male.gltf", yaw=0.0)
+        self._intern_park = None       # bound to a GreenSpace in _enter_park
         # The building whose interior is currently active (starts at HQ).
         self.current_building = next((b for b in self.park.buildings if b.status == "hq"),
                                      self.park.buildings[0] if self.park.buildings else None)
@@ -231,6 +239,7 @@ class Game:
         self._quest_task = None         # which of its to-do keys is being captured
         self._quest_buf = ""
         self._quest_line = 0            # which dialogue line of the current beat is showing
+        self._quest_action = None       # store kind ("outfit"/"hire") when a greeting ends by opening a shop; None for a normal ask
         # Quest buildings are entered like offices: you walk into a default floor and
         # talk (E) to one NPC inside. These hold the in-visit state; None when not in one.
         self._quest_building = None     # the NpcBuilding whose interior we're inside
@@ -261,6 +270,7 @@ class Game:
         self.ceo_profile = None
         self.company = {}
         self._quest_input, self._quest_task, self._quest_buf = None, None, ""
+        self._quest_line, self._quest_action = 0, None
         self._quest_building = self._quest_actor = self._saved_office = None
         self._park_return = None
         self.taskboard = tasks.TaskBoard(set())
@@ -797,6 +807,42 @@ class Game:
         self._show_room(self.room.key)   # re-seat the active room (picks up a hire here)
         self._rebuild_nav()
 
+    def _take_on_intern(self) -> None:
+        """Take on the free park intern. They only sign on once you actually have an
+        office to put them in — otherwise they tell you to come back when you've
+        leased one. Free hire (cost 0); completes the "intern" quest so they're gone
+        from the park afterward (and stay gone after a restart)."""
+        self._e_cooldown = 8
+        if self.taskboard.is_done("intern"):
+            return
+        name = self.intern.name
+        has_office = any(b.status in ("hq", "leased") for b in self.park.buildings)
+        if not has_office:
+            self.inbox.post(name, "Love the energy — but I need a desk to work at. "
+                            "Get yourself an office first and I'll join you, no charge.",
+                            kind="system", subject="Your first intern", ts=pr.get_time())
+            return
+        if not self.has_desk_space:
+            self.inbox.post(name, "You're out of desks — lease another wing and come "
+                            "find me.", kind="system", subject="Your first intern",
+                            ts=pr.get_time())
+            return
+        cand = roster.generate(len(self.all_agents), self.used_names)
+        cand["role"], cand["dept"] = "Intern", "Operations"
+        cand["model"], cand["cost"] = "Casual_Male.gltf", 0
+        appearance = {"skin_idx": cand.get("tone_idx", 1), "hair_idx": 0,
+                      "hair_style": 0, "eye_idx": 0}
+        before = len(self.all_agents)
+        self._commit_hire(cand, appearance)
+        if len(self.all_agents) > before:
+            self.taskboard.complete("intern")
+            self.link.save_tasks(self.taskboard.done)
+            self.intern.name = cand["name"]
+            self.inbox.post(cand["name"], "I'm in — first one on the team! Point me at "
+                            "anything and I'll get to work. (Joined for free.)",
+                            kind="system", subject="✓ Take on your first intern",
+                            ts=pr.get_time())
+
     # -- shop -----------------------------------------------------------------
     def buy_item(self, item: dict) -> None:
         """Charge for a shop item: paint recolors the room, furniture is placed."""
@@ -888,6 +934,14 @@ class Game:
         self.camera.yaw = math.radians(180.0)
         self.camera.pitch = math.radians(20.0)
         self.camera.distance = 10.0
+        # Stand your first intern out on a park lawn (Founders Green), off the
+        # fountain/path, until you take them on.
+        self._intern_park = next((g for g in self.park.parks if g.id == "founders_green"),
+                                 self.park.parks[0] if self.park.parks else None)
+        if self._intern_park is not None:
+            self.intern.x = self._intern_park.x + 2.2
+            self.intern.z = self._intern_park.z + 1.2
+            self.intern.y = 0.0
 
     def _enter_office(self, building=None) -> None:
         # Always arrive in the building's lobby (then ride up to the wings). A new
@@ -985,13 +1039,16 @@ class Game:
         self._office_spawn = (ceo.x, ceo.z)
         self._e_cooldown = 3                   # don't let the entering E talk immediately
 
+    _STORE_ACTOR = {"outfit": "Tailor", "hire": "Recruiter"}
+
     def _spawn_quest_actor(self, npc) -> None:
-        """Place one NPC inside the quest building to talk to — Robin for the cafe,
-        otherwise a clerk named after the beat's speaker. Added to the drawn cast."""
+        """Place one NPC inside the building to talk to — Robin for the cafe, a
+        shopkeeper for a store, else a clerk named after the beat's speaker."""
         keys = npc.pending(self.taskboard.done) or list(npc.task_keys())
         key = keys[0] if keys else ""
         lines = dialogue.lines_for(self.dialogue, key)
-        name = (lines[0].who if lines else "") or npc.name
+        name = (self._STORE_ACTOR.get(npc.store) if npc.is_store
+                else (lines[0].who if lines else "")) or npc.name
         cx, cz = self.plan.grid_to_world(self.plan.cols / 2.0 - 0.5, 2.0)
         if npc.task == "cofounder":            # the cafe: it's Robin in person
             actor = self.robin
@@ -1015,8 +1072,14 @@ class Game:
         return math.hypot(a.x - ceo.x, a.z - ceo.z) < TALK_RANGE
 
     def _draw_quest_actor_prompt(self) -> None:
+        b = self._quest_building
         name = self._quest_actor.name if self._quest_actor else "them"
-        text = f"Press  E  to talk to {name}"
+        if b is not None and b.store == "outfit":
+            text = "Press  E  to change your outfit"
+        elif b is not None and b.store == "hire":
+            text = "Press  E  to hire agents"
+        else:
+            text = f"Press  E  to talk to {name}"
         tw = pr.measure_text(text, 20)
         x = (config.WINDOW_WIDTH - tw) // 2
         pr.draw_rectangle(x - 12, config.WINDOW_HEIGHT - 132, tw + 24, 32, pr.Color(0, 0, 0, 160))
@@ -1065,12 +1128,22 @@ class Game:
         task = tasks.TASK_BY_KEY.get(key)
         if task is not None and task.ask and task.field:
             self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
-            self._quest_line = 0                           # start at the beat's first line
+            self._quest_line, self._quest_action = 0, None  # start at the beat's first line
             self._e_cooldown = 4                           # don't let the opening E skip line 1
             while pr.get_char_pressed() > 0:               # drop the 'e' that opened it
                 pass
         else:
             self._complete_quest_stop(npc, key)
+
+    def _open_store_greeting(self, npc) -> None:
+        """A shop NPC (Tailor / Recruiter) greets you, then opening the shop happens
+        on the last line — same dialogue modal, but it ends in an action (the editor
+        or the Hire app) instead of a typed answer. Beat key = the store kind."""
+        self._quest_input, self._quest_task, self._quest_buf = npc, npc.store, ""
+        self._quest_line, self._quest_action = 0, npc.store
+        self._e_cooldown = 4
+        while pr.get_char_pressed() > 0:                   # drop the 'e' that opened it
+            pass
 
     def _complete_quest_stop(self, npc, key: str, answer: str | None = None) -> None:
         """Mark one of a quest stop's to-dos done, store any typed decision on the
@@ -1094,7 +1167,7 @@ class Game:
 
     def _close_quest_input(self) -> None:
         self._quest_input, self._quest_task, self._quest_buf = None, None, ""
-        self._quest_line = 0
+        self._quest_line, self._quest_action = 0, None
 
     def _draw_quest_input(self) -> None:
         """Modal conversation for a quest stop: step through the beat's dialogue
@@ -1103,7 +1176,7 @@ class Game:
         advance never leaks into the text box. Lines from assets/dialogue.json."""
         npc = self._quest_input
         key = self._quest_task
-        task = tasks.TASK_BY_KEY[key]
+        task = tasks.TASK_BY_KEY.get(key)          # None for a store-greeting beat
         lines = dialogue.lines_for(self.dialogue, key)
         n = len(lines)
         # _quest_line is 0..n: 0..n-1 are the spoken lines; n is the answer step.
@@ -1149,8 +1222,16 @@ class Game:
         if not in_input:
             # Spoken line: wait for the player to read, then advance to the next line
             # (or to the answer step). Drain the keypress so it can't type into the field.
+            is_last = self._quest_line == n - 1
             dots = "." * (1 + int(pr.get_time() * 2) % 3)
-            nextlabel = "to answer" if self._quest_line == n - 1 else "to continue"
+            if not is_last:
+                nextlabel = "to continue"
+            elif self._quest_action == "outfit":
+                nextlabel = "to change your outfit"
+            elif self._quest_action == "hire":
+                nextlabel = "to hire"
+            else:
+                nextlabel = "to answer"
             pr.draw_text(f"Press  E  {nextlabel}{dots}", x + 20, y + h - 30, 16,
                          pr.Color(150, 200, 230, 255))
             advance = (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_SPACE)
@@ -1158,12 +1239,23 @@ class Game:
                        or pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
                        or gamepad.pressed(gamepad.CROSS) or gamepad.pressed(gamepad.TRIANGLE))
             if advance and self._e_cooldown == 0:
+                if is_last and self._quest_action is not None:   # store: open the shop
+                    action = self._quest_action
+                    self._close_quest_input()
+                    if action == "outfit":
+                        self._open_outfitter()
+                    elif action == "hire":
+                        self._open_hire_store()
+                    return
                 self._quest_line += 1
                 self._e_cooldown = 3            # debounce so one press = one step
                 while pr.get_char_pressed() > 0:  # don't let this key land in the field
                     pass
             return
 
+        if task is None:                       # safety: a non-ask beat fell through
+            self._close_quest_input()
+            return
         # Answer step: the input field for this task's `ask`.
         pr.draw_text(task.ask.upper(), x + 20, y + h - 92, 14, pr.Color(120, 215, 235, 255))
         field = pr.Rectangle(x + 20, y + h - 72, w - 40, 40)
@@ -1206,16 +1298,26 @@ class Game:
                   or self.dossier.open or self.investor.open or self.phone.open)
         if self.phone.open:                    # the Nokia works out in the city too
             self.phone.update()
+        # Your first intern waits in a park until taken on (the "intern" quest).
+        show_intern = (self._intern_park is not None
+                       and not self.taskboard.is_done("intern"))
         if not frozen:
             self.player.update(dt, self.camera)
             ceo.x, ceo.z = self.park.collide(ceo.x, ceo.z)   # block walking through buildings
             self.camera.update(dt, self.player.ch)
             ceo.update(dt, self.registry)
+            if show_intern:                      # keep the intern turned toward you, idling
+                self.intern.yaw = math.degrees(math.atan2(ceo.x - self.intern.x,
+                                                          ceo.z - self.intern.z))
+                self.intern.update(dt, self.registry)
         self.pedestrians.update(dt, ceo.x, ceo.z, self.registry)  # ambient crowd
         near = self.park.nearest(ceo.x, ceo.z)
         # Quest-stop NPC buildings (Chamber of Commerce, …) are only offered when no
         # lease lot is in reach, so E is never ambiguous (they never share a corner).
         near_npc = self.park.nearest_npc(ceo.x, ceo.z) if near is None else None
+        intern_near = (show_intern and near is None and near_npc is None
+                       and math.hypot(self.intern.x - ceo.x, self.intern.z - ceo.z)
+                       <= parkmod.REACH)
 
         if not frozen:
             if pr.is_key_pressed(pr.KEY_P):
@@ -1229,21 +1331,24 @@ class Game:
                     self.cash -= near.deposit
                     self.park.lease(near)        # capacity rises via max_desks
             elif near_npc is not None and press_e:
-                if near_npc.store == "hire":     # TalentWorks → phone Hire app
-                    self._open_hire_store()
-                elif near_npc.is_store:          # The Outfitters → wardrobe store
-                    self._open_outfitter()
-                else:                            # quest building → walk inside and talk
-                    self._enter_quest_building(near_npc); return
+                # Every interactive building — quest stop OR storefront — is entered;
+                # inside, talk to the NPC (E) to do the quest / open the shop.
+                self._enter_quest_building(near_npc); return
+            elif intern_near and press_e:        # the park intern → take them on (free)
+                self._take_on_intern()
 
         pr.begin_drawing()
         pr.clear_background(self.daylight.sky_color())
         self.park.draw(self.camera.camera, self.season.name, self.taskboard.done)
         pr.begin_mode_3d(self.camera.camera)
         self.pedestrians.draw(self.registry)
+        if show_intern:
+            self.intern.draw(self.registry)
         ceo.draw(self.registry)
         pr.end_mode_3d()
         self._draw_park_overlay(near, near_npc)
+        if show_intern:
+            self._draw_intern_marker()
         if self._quest_input is not None:        # quest-stop decision capture, on top
             self._draw_quest_input()
         self._do_dossier_action(self.dossier.draw(self.company))
@@ -1273,6 +1378,32 @@ class Game:
         if sub:
             sw = pr.measure_text(sub, 13)
             pr.draw_text(sub, sx - sw // 2, sy + 18, 13, sub_color)
+
+    def _draw_intern_marker(self) -> None:
+        """A bobbing green "!" and prompt over the park intern until you take them on.
+        Drawn in the 2D overlay pass, projecting the intern's head to the screen."""
+        r = self.intern
+        cam = self.camera.camera
+        fx, fz = cam.target.x - cam.position.x, cam.target.z - cam.position.z
+        if (r.x - cam.position.x) * fx + (r.z - cam.position.z) * fz <= 0:
+            return                                  # behind the camera
+        bob = math.sin(pr.get_time() * 3.0) * 0.18
+        sp = pr.get_world_to_screen(
+            pr.Vector3(r.x, r.y + r.height + 0.9 + bob, r.z), cam)
+        if sp.x < 0 or sp.x > config.WINDOW_WIDTH:
+            return
+        sx, sy = int(sp.x), int(sp.y)
+        pr.draw_circle(sx, sy, 15, pr.Color(0, 0, 0, 120))
+        pr.draw_circle(sx, sy, 13, pr.Color(150, 220, 110, 255))   # the "!" disc
+        bw = pr.measure_text("!", 26)
+        pr.draw_text("!", sx - bw // 2, sy - 16, 26, pr.Color(20, 40, 12, 255))
+        near = (math.hypot(r.x - self.player.ch.x, r.z - self.player.ch.z)
+                <= parkmod.REACH)
+        where = self._intern_park.name if self._intern_park else "the park"
+        hint = "Press E: take on a free intern" if near else f"A keen intern · {where}"
+        hw = pr.measure_text(hint, 16)
+        pr.draw_rectangle(sx - hw // 2 - 6, sy + 20, hw + 12, 24, pr.Color(0, 0, 0, 170))
+        pr.draw_text(hint, sx - hw // 2, sy + 24, 16, pr.Color(170, 235, 150, 255))
 
     def _draw_clock(self) -> None:
         """Top-center chip naming the current time-of-day phase and season."""
@@ -1544,9 +1675,12 @@ class Game:
                 # otherwise E uses a nearby portal (doorway / elevator / exit).
                 portal = self._nearest_portal()
                 if pr.is_key_pressed(pr.KEY_E) and self._e_cooldown == 0:
-                    if self._near_quest_actor():        # talk to the quest NPC inside
-                        self._visit_quest_stop(self._quest_building)
-                        self._e_cooldown = 4
+                    if self._near_quest_actor():        # talk to the NPC inside
+                        b = self._quest_building
+                        if b.is_store:                  # shop NPC greets you, then opens
+                            self._open_store_greeting(b)
+                        else:                           # quest stop → the dialogue/ask
+                            self._visit_quest_stop(b)
                     elif self._quest_building is None and self._near_records():
                         if not self.dossier.open:       # Files cabinet (your office only)
                             self.dossier.toggle()

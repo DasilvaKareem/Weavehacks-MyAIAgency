@@ -72,6 +72,8 @@ TASKS: list[Task] = [
          ask="How does it make money?", field="business_model", reward=750),
     Task("cofounder",   "The Idea", "Win over co-founder Robin",  "Buy Robin a coffee and pitch them.",
          ask="Why should Robin bet on you?", field="cofounder_pitch", reward=2000),
+    Task("seed",        "The Idea", "Raise your seed money",       "Pitch an angel investor for a first check.",
+         ask="Pitch your idea — why fund it?", field="seed_pitch", reward=5000),
 
     # --- The Business Model Canvas (workshop at the Startup Incubator) -------
     # The canvas's nine blocks; customer segments (customer) and revenue streams
@@ -94,6 +96,7 @@ TASKS: list[Task] = [
     # --- Chapter 2: Set Up Shop ---------------------------------------------
     Task("office",      "Set Up Shop", "Lease your first office", "Walk up to a building and lease it.",
          auto=lambda s: bool(s.get("leased"))),
+    Task("intern",      "Set Up Shop", "Take on your first intern", "An intern's waiting in the park — they'll work for free once you have an office."),
     Task("engineer",    "Set Up Shop", "Hire your first engineer", "Someone has to build it.",
          auto=_has_role("Engineer")),
     Task("logo",        "Set Up Shop", "Design a logo",            "Give a Designer the brief.",
