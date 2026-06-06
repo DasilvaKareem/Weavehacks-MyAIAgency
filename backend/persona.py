@@ -114,9 +114,9 @@ def _derive_style(t: dict) -> dict:
     humor = ("dry wit" if o >= 70 and e < 70 else
              "playful" if e >= 70 else "all-business")
     directness = ("blunt and direct" if a <= 45 or c >= 85 else "diplomatic")
-    verbosity = ("concise" if c >= 75 or e <= 40 else
-                 "expansive" if e >= 75 else "balanced")
-    formality = ("formal" if c >= 80 and o < 70 else "casual" if e >= 70 else "neutral")
+    verbosity = ("terse" if c >= 75 or e <= 40 else
+                 "conversational but still brief" if e >= 75 else "concise")
+    formality = "casual" if e >= 55 else "relaxed-professional"
     composure = "steady under pressure" if n <= 30 else ("intense" if n >= 65 else "level-headed")
     return {"lead": lead, "energy": energy, "warmth": warmth, "humor": humor,
             "directness": directness, "verbosity": verbosity, "formality": formality,
@@ -139,5 +139,7 @@ def render_prompt(p: Persona) -> str:
         f"{s['verbosity']} by default; humor is {s['humor']}.\n"
         f"- Strengths to lean on: {', '.join(p.strengths)}.\n"
         f"- Signature habit: {p.quirk}.\n"
-        "Let these shape both how you talk and the choices you make in your work."
+        "Let these shape HOW you talk and the choices you make — but always sound "
+        "like a real person in a quick work chat: brief, natural, to the point. "
+        "Never wordy, never robotic, no filler, no bulleted essays unless asked."
     )
