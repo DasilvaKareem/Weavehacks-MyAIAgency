@@ -106,6 +106,13 @@ DAYTONA_PUBLIC_PREVIEW = os.getenv("COMPANY_AI_DAYTONA_PUBLIC", "1").lower() not
 # default only.
 WEAVE_PROJECT = os.getenv("WEAVE_PROJECT", "company-ai")  # or "entity/company-ai"
 
+# --- Redis (fast agent-to-agent message bus) ---
+# When set, agents get message_agent/check_inbox tools backed by Redis Streams
+# (durable per-agent inbox + company broadcast). See backend/agent_bus.py. Unset =
+# graceful no-op (the comms tools simply aren't offered). Read live, like the
+# Weave/Gemini keys, so a .env loaded after import still enables it.
+REDIS_URL = os.getenv("REDIS_URL", "")  # e.g. redis://default:<pass>@<host>:<port>
+
 # --- Composio (Google & SaaS app agents) ---
 # Composio handles per-user OAuth for hundreds of apps; a role maps to one or more
 # Composio toolkits (GMAIL, GOOGLECALENDAR, …). See backend/composio_tools.py.

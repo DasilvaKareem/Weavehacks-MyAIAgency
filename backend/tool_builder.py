@@ -6,6 +6,7 @@ import asyncio
 from . import config
 from .animator_tools import load_animator_tools
 from .blogger_tools import load_blogger_tools
+from .bus_tools import load_bus_tools
 from .company_fs import load_fs_tools
 from .composio_tools import load_composio_tools
 from .daytona_tools import load_daytona_tools
@@ -19,6 +20,9 @@ from .weave_tools import load_weave_tools
 
 def _local_tools(role: str, agent_id: str | None, agent_name: str) -> list:
     tools = load_fs_tools(author_id=agent_id, author_name=agent_name)
+    # Every agent gets the real-time Redis comms bus (when REDIS_URL is set), just
+    # like the shared drive — so any agent can message any teammate, profiled or not.
+    tools += load_bus_tools(agent_id, agent_name, role)
     if not config.role_profile(role):
         return tools
     tools += load_exec_tools()

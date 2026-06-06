@@ -15,6 +15,9 @@ mcp>=1.2
 daytona>=0.18
 # Composio — Google/SaaS app agents (COMPOSIO_API_KEY + COMPOSIO_USER_ID).
 composio-langchain>=0.13
+# Redis — fast agent-to-agent message bus (durable Streams inbox + broadcast).
+# Set REDIS_URL to go live; see backend/agent_bus.py. Graceful no-op without it.
+redis>=5.0
 # W&B Weave — LLM observability. Auto-traces every Gemini/LangChain call once
 # weave.init() runs (WANDB_API_KEY); also powers the Observability Engineer agent
 # that reads those traces. See backend/observability.py + backend/weave_tools.py.
