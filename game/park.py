@@ -68,7 +68,7 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             # them early (when their to-dos and seed-cash rewards matter most).
             "chamber": (8, 8), "registrar": (12, 8), "research_firm": (8, 12),
             "bureau": (12, 12), "signshop": (13, 9), "brandstudio": (7, 10),
-            "citybank": (13, 11),
+            "citybank": (13, 11), "broker": (14, 11),
             # The Startup Incubator hosts the Business Model Canvas workshop.
             "incubator": (10, 7),
             # Apex Ventures (the VC firm) on its own downtown block in the cluster.
@@ -145,6 +145,8 @@ class NpcBuilding:
     blurb: str = ""
     tasks: tuple = ()          # workshop: an ordered list of to-do keys
     store: str | None = None   # storefront kind ("outfit" = the wardrobe shop)
+    market: str | None = None  # idle-market venue ("bank" / "broker") opened inside
+    plan: str | None = None    # interior floor-plan id (else the default quest plan)
 
     @property
     def is_quest_stop(self) -> bool:
@@ -155,9 +157,13 @@ class NpcBuilding:
         return self.store is not None
 
     @property
+    def is_market(self) -> bool:
+        return self.market is not None
+
+    @property
     def interactive(self) -> bool:
-        """Walk-up + E does something here (a quest to-do or a storefront)."""
-        return self.is_quest_stop or self.is_store
+        """Walk-up + E does something here (a quest to-do, a storefront, a market)."""
+        return self.is_quest_stop or self.is_store or self.is_market
 
     def task_keys(self) -> tuple:
         """Every to-do this stop can complete (one for a shop, many for a workshop)."""
@@ -426,7 +432,8 @@ class Park:
                         x=float(n["x"]), z=float(n["z"]), awning=tuple(n["awning"]),
                         task=n.get("task"), reward=int(n.get("reward", 0)),
                         blurb=n.get("blurb", ""), tasks=tuple(n.get("tasks", ())),
-                        store=n.get("store"))
+                        store=n.get("store"), market=n.get("market"),
+                        plan=n.get("plan"))
             for n in (npc if npc is not None else load_npc())
         ]
         for lot in lots:
@@ -733,17 +740,24 @@ class Park:
                              pr.Vector3(0, 1, 0), yaw, pr.Vector3(scl, scl, scl), pr.WHITE)
 
     def _draw_quest_marker(self, n: NpcBuilding) -> None:
-        """A cyan ground ring + floating diamond over an unfinished quest stop, so
-        the city itself points you at your next to-do (cleared once it's done)."""
-        col = pr.Color(90, 210, 230, 255)
-        pr.draw_cylinder(pr.Vector3(n.x, 0.05, n.z), 3.2, 3.2, 0.05, 26, col)
-        pr.draw_cylinder_wires(pr.Vector3(n.x, 0.07, n.z), 3.4, 3.4, 0.07, 26, col)
-        # a bobbing "!" diamond marker above the door (uses time for a gentle float)
-        bob = 0.25 * math.sin(pr.get_time() * 2.2 + n.x)
+        """The quest indicator over an unfinished quest-stop building (cleared once
+        it's done). Anchors the floating diamond just above the building's roof."""
         top = (self._models.get(n.model).top if self._models.get(n.model) else 5.0)
-        my = min(top * self.height_mult(n.x, n.z), 6.0) + 1.4 + bob
-        pr.draw_cylinder(pr.Vector3(n.x, my, n.z), 0.0, 0.42, 0.5, 4, col)        # spike down
-        pr.draw_cylinder(pr.Vector3(n.x, my + 0.5, n.z), 0.42, 0.0, 0.5, 4, col)  # spike up
+        head = min(top * self.height_mult(n.x, n.z), 6.0) + 1.4
+        self.draw_quest_indicator(n.x, n.z, head)
+
+    def draw_quest_indicator(self, x: float, z: float, head_y: float) -> None:
+        """A cyan ground ring + floating "!" diamond at a world spot, so the city
+        itself points you at your next objective. `head_y` is where the diamond
+        floats. Shared by quest-stop buildings AND free-standing quest NPCs (e.g. the
+        park intern) so every "go here next" cue looks identical — one source of truth."""
+        col = pr.Color(90, 210, 230, 255)
+        pr.draw_cylinder(pr.Vector3(x, 0.05, z), 3.2, 3.2, 0.05, 26, col)
+        pr.draw_cylinder_wires(pr.Vector3(x, 0.07, z), 3.4, 3.4, 0.07, 26, col)
+        # a bobbing "!" diamond marker (uses time for a gentle float)
+        my = head_y + 0.25 * math.sin(pr.get_time() * 2.2 + x)
+        pr.draw_cylinder(pr.Vector3(x, my, z), 0.0, 0.42, 0.5, 4, col)        # spike down
+        pr.draw_cylinder(pr.Vector3(x, my + 0.5, z), 0.42, 0.0, 0.5, 4, col)  # spike up
 
     def _draw_beacon(self, b: Building) -> None:
         """Street-level marker for an office lot: a glowing ground ring around the

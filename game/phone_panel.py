@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pyray as pr
 
-from . import gamepad, voice, tasks
+from . import gamepad, voice, tasks, roster, config
 from .chat_panel import _wrap
 from .coordinator_link import COFOUNDER_NAME
 from backend.config import GEMINI_MODEL  # noqa: F401  (kept for parity / future use)
@@ -24,11 +24,8 @@ from backend.config import GEMINI_MODEL  # noqa: F401  (kept for parity / future
 # Screens (a tiny state machine).
 HOME, COFOUNDER, CONTACTS, AGENT, CALL = "home", "cofounder", "contacts", "agent", "call"
 INBOX, MESSAGE, TODO = "inbox", "message", "todo"
-HIRE, HIRE_ROLE = "hire", "hire_role"        # the Upwork-style hiring app
-
-# Catalog category → short tab label for the Hire app.
-_HIRE_TABS = {"office": "Office", "warriors": "Warriors", "fantasy": "Fantasy",
-              "critters": "Critters"}
+CF_MENU = "cf_menu"          # co-founder hub: Follow me / Wait here / Send message
+HIRE, HIRE_ROLE = "hire", "hire_role"        # the hiring app: candidate card → role grid
 
 # Phone body geometry (centred on screen each frame). The whole phone is drawn at
 # this native size and then uniformly scaled up via a Camera2D so it fills a tall
@@ -68,10 +65,8 @@ class PhonePanel:
         self._contacts = contacts_getter  # () -> list[Character]
         self.inbox = inbox                # Inbox: messages that come TO the CEO
         self.board = taskboard            # tasks.TaskBoard (the To-Do app), optional
-        self.hire = hire                  # hire bridge (catalog/cash/unlock/hire), optional
-        self._hire_tabs: list[str] = []   # catalog categories, lazily filled
-        self._hire_tab = 0                # current category tab in the Hire app
-        self._hire_item = None            # catalog model picked, awaiting a role choice
+        self.hire = hire                  # hire bridge (new_candidate/departments/hire), optional
+        self._cand = None                 # the auto-generated candidate awaiting a role
         self._hire_flash = ""             # transient "Office full" / "Hired!" message
         self._home_msg = ""               # transient note on the home screen (locked feature)
         self.open = False
@@ -121,32 +116,49 @@ class PhonePanel:
     def open_hire(self) -> None:
         """Open straight to the Hire app (used by the staffing-agency building)."""
         self.open_panel()
-        self.screen, self.sel, self._list_top = HIRE, 0, 0
-        self._hire_tab, self._hire_item, self._hire_flash = 0, None, ""
+        self._enter_hire()
+
+    def _enter_hire(self) -> None:
+        """Show the Hire app's candidate card with a fresh auto-generated person."""
+        self.screen, self.sel, self._list_top, self._hire_flash = HIRE, 0, 0, ""
+        self._cand = self.hire.new_candidate() if self.hire else None
+
+    def _shuffle_candidate(self) -> None:
+        if self.hire is not None:
+            self._cand = self.hire.new_candidate()
+            self._hire_flash = ""
 
     # --- hire-app data helpers --------------------------------------------
 
-    def _hire_cats(self) -> list[str]:
-        """Catalog categories, in first-seen order (drives the Hire app tabs)."""
-        if not self._hire_tabs and self.hire is not None:
-            seen: list[str] = []
-            for it in self.hire.catalog():
-                c = it.get("category", "office")
-                if c not in seen:
-                    seen.append(c)
-            self._hire_tabs = seen
-        return self._hire_tabs
+    def _role_rows(self) -> list[tuple]:
+        """Flat display list for the role grid: ('h', dept, None, 0) header rows
+        interleaved with ('r', title, color, rate) selectable role rows."""
+        rows: list[tuple] = []
+        if self.hire is None:
+            return rows
+        for dept, roles in self.hire.departments():
+            rows.append(("h", dept, None, 0))
+            for title, color, rate in roles:
+                rows.append(("r", title, color, rate))
+        return rows
 
-    def _hire_rows(self) -> list[dict]:
-        """Catalog items in the current tab's category."""
-        cats = self._hire_cats()
-        if not cats:
-            return []
-        cat = cats[self._hire_tab % len(cats)]
-        return [it for it in self.hire.catalog() if it.get("category", "office") == cat]
+    def _first_role(self, rows: list[tuple]) -> int:
+        for i, r in enumerate(rows):
+            if r[0] == "r":
+                return i
+        return 0
 
-    def _hire_locked(self, it: dict) -> bool:
-        return bool(it.get("locked")) and it["id"] not in self.hire.unlocked()
+    def _step_role(self, rows: list[tuple], step: int) -> None:
+        """Move self.sel to the next/prev selectable role row, skipping headers."""
+        n = len(rows)
+        if n == 0:
+            return
+        i = self.sel
+        for _ in range(n):
+            i = (i + step) % n
+            if rows[i][0] == "r":
+                self.sel = i
+                return
 
     def _cofounder_ready(self) -> bool:
         """Robin is only your co-founder once you've won them over (the cofounder
@@ -315,8 +327,7 @@ class PhonePanel:
         elif self.sel == 2:
             self.screen, self.sel, self._scroll, self._list_top = CONTACTS, 0, 0, 0
         elif self.sel == 3:
-            self.screen, self.sel, self._list_top = HIRE, 0, 0
-            self._hire_tab, self._hire_item, self._hire_flash = 0, None, ""
+            self._enter_hire()
         elif self.sel == 4:
             self.screen, self.sel, self._list_top = TODO, 0, 0
         else:
@@ -347,61 +358,48 @@ class PhonePanel:
         if self._back():
             self.screen, self.sel = HOME, 4
 
-    # --- Hire app (browse models → pick a role → hire) --------------------
+    # --- Hire app (candidate card → pick a role from the dept grid) --------
 
     def _update_hire(self) -> None:
+        """Candidate card: an auto-generated person. Shuffle to re-roll, Add to go
+        choose their role (and pay its rate)."""
         if self.hire is None or self._back():
             self.screen, self.sel = HOME, 3
             return
-        cats = self._hire_cats()
-        if cats:                                   # Left/Right switch category tabs
-            if pr.is_key_pressed(pr.KEY_LEFT) or gamepad.pressed(gamepad.DPAD_LEFT):
-                self._hire_tab = (self._hire_tab - 1) % len(cats)
-                self.sel, self._list_top, self._hire_flash = 0, 0, ""
-            if pr.is_key_pressed(pr.KEY_RIGHT) or gamepad.pressed(gamepad.DPAD_RIGHT):
-                self._hire_tab = (self._hire_tab + 1) % len(cats)
-                self.sel, self._list_top, self._hire_flash = 0, 0, ""
-        rows = self._hire_rows()
-        n = len(rows)
-        self._nav(n)
-        if n and self._enter():
-            self.sel = min(self.sel, n - 1)
-            self._pick_hire(rows[self.sel])
-
-    def _pick_hire(self, it: dict) -> None:
-        """Enter on a catalog row: buy it if locked, else go choose a role."""
-        if self._hire_locked(it):
-            if self.hire.cash() < it.get("unlock", 0):
-                self._hire_flash = "Can't afford unlock"
-            elif self.hire.unlock(it):
-                self._hire_flash = f"Unlocked {_short(it['name'], 16)}"
+        # Shuffle: re-roll the candidate (Space / arrows / D-pad / Square).
+        if (pr.is_key_pressed(pr.KEY_SPACE) or pr.is_key_pressed(pr.KEY_LEFT)
+                or pr.is_key_pressed(pr.KEY_RIGHT) or gamepad.pressed(gamepad.DPAD_LEFT)
+                or gamepad.pressed(gamepad.DPAD_RIGHT) or gamepad.pressed(gamepad.SQUARE)):
+            self._shuffle_candidate()
             return
-        if not self.hire.can_hire():
-            self._hire_flash = "Office is full — lease more space"
-            return
-        if self.hire.cash() < it.get("price", 0):
-            self._hire_flash = "Not enough cash"
-            return
-        self._hire_item = it
-        self.screen, self.sel, self._list_top, self._hire_flash = HIRE_ROLE, 0, 0, ""
+        if self._cand is None:
+            self._shuffle_candidate()
+        if self._enter():                          # Add → choose a role (gate at commit)
+            rows = self._role_rows()
+            self.screen, self.sel, self._list_top = HIRE_ROLE, self._first_role(rows), 0
 
     def _update_hire_role(self) -> None:
+        """Role grid: roles grouped by department, each with its hire rate. Enter
+        commits the hire (charges the role's rate)."""
         if self.hire is None or self._back():
             self.screen, self.sel, self._list_top = HIRE, 0, 0
             return
-        roles = self.hire.roles()
-        n = len(roles)
-        self._nav(n)
-        if n and self._enter():
-            self.sel = min(self.sel, n - 1)
-            role = roles[self.sel]
-            if self.hire.hire(self._hire_item, role):
-                name = _short(self._hire_item["name"], 14)
-                self._hire_item = None
-                self.screen, self.sel, self._list_top = HIRE, 0, 0
-                self._hire_flash = f"Hired a {_short(role, 18)}"
+        rows = self._role_rows()
+        if not rows:
+            return
+        if pr.is_key_pressed(pr.KEY_UP) or gamepad.pressed(gamepad.DPAD_UP):
+            self._step_role(rows, -1)
+        if pr.is_key_pressed(pr.KEY_DOWN) or gamepad.pressed(gamepad.DPAD_DOWN):
+            self._step_role(rows, +1)
+        if not (0 <= self.sel < len(rows) and rows[self.sel][0] == "r"):
+            self.sel = self._first_role(rows)
+        if self._enter():
+            role = rows[self.sel][1]
+            if self.hire.hire(self._cand, role):
+                self._hire_flash = f"Hired {_short(self._cand['name'], 16)}"
+                self._enter_hire()                 # back to a fresh candidate card
             else:
-                self._hire_flash = "Hire failed (full / broke)"
+                self.screen, self._hire_flash = HIRE, "Hire failed (full / broke)"
 
     def _open_message(self, msg) -> None:
         self.inbox.mark_read(msg)
@@ -806,59 +804,86 @@ class PhonePanel:
             self._draw_status_strip(lx, ly, lw, "Hire")
             pr.draw_text("Hiring unavailable.", lx + 8, ly + 30, FONT, INK_DIM)
             return
-        cats = self._hire_cats()
-        cat = cats[self._hire_tab % len(cats)] if cats else "office"
-        label = _HIRE_TABS.get(cat, cat.title())
-        self._draw_status_strip(lx, ly, lw, f"Hire ‹{label}›")
-        rows = self._hire_rows()
-        if not rows:
-            pr.draw_text("Nobody available.", lx + 8, ly + 30, FONT, INK_DIM)
-            return
-        # leave a line at the bottom for the flash / tab hint
-        foot = self._hire_flash or "◄ ► category"
-        pr.draw_text(_short(foot, 30), lx + 6, ly + lh - 16, 12, INK_DIM)
-        start, ys, rh, _, _ = self._list_view_h(len(rows), bottom_pad=20)
+        self._draw_status_strip(lx, ly, lw, "New Hire")
+        c = self._cand or {}
+        look = c.get("appearance", {}) or {}
+        cx = lx + lw // 2
+        # A little monochrome line-art portrait that reflects the random look.
+        self._draw_portrait(cx, ly + 62, look)
+        # Name + the character model they'll wear.
+        name = c.get("name", "—")
+        while name and pr.measure_text(name, 20) > lw - 16:
+            name = name[:-1]
+        nw = pr.measure_text(name, 20)
+        pr.draw_text(name, cx - nw // 2, ly + 122, 20, INK)
+        model = (c.get("char_name") or "").strip()
+        if model:
+            mw = pr.measure_text(model, 12)
+            pr.draw_text(model, cx - mw // 2, ly + 148, 12, INK_DIM)
+        pr.draw_line(lx + 14, ly + 170, lx + lw - 14, ly + 170, INK_DIM)
+        # Look summary, read from the palettes by index.
+        def _label(palette, idx):
+            return palette[idx % len(palette)][0]
+        style = _label(config.HAIRSTYLES, look.get("hair_style", 0))
+        rows = [("Skin", _label(config.SKIN_TONES, look.get("skin_idx", 0))),
+                ("Hair", f"{_label(config.HAIR_COLORS, look.get('hair_idx', 0))} · {style}"),
+                ("Eyes", _label(config.EYE_COLORS, look.get("eye_idx", 0)))]
+        y = ly + 180
+        for tag, val in rows:
+            pr.draw_text(tag, lx + 16, y, 13, INK_DIM)
+            pr.draw_text(_short(val, 22), lx + 70, y, 13, INK)
+            y += 20
+        # Footer: transient flash, then the shuffle hint.
+        if self._hire_flash:
+            pr.draw_text(_short(self._hire_flash, 30), lx + 8, ly + lh - 34, 12, INK)
+        hint = "Space / ◄ ► = shuffle"
+        hw = pr.measure_text(hint, 12)
+        pr.draw_text(hint, cx - hw // 2, ly + lh - 16, 12, INK_DIM)
+
+    def _draw_portrait(self, cx: int, cy: int, look: dict) -> None:
+        """A simple monochrome avatar that mirrors the random hairstyle/eyes — just
+        enough to make each shuffled candidate feel like a distinct person."""
+        bald = config.HAIRSTYLES[look.get("hair_style", 0) % len(config.HAIRSTYLES)][1] == "bald"
+        pr.draw_circle(cx, cy + 50, 30, INK_DIM)              # shoulders / torso
+        if not bald:                                          # hair shows as a top crescent
+            pr.draw_circle(cx, cy - 8, 28, INK)
+        pr.draw_circle(cx, cy, 26, INK_DIM)                  # head over the hair blob
+        for dx in (-10, 10):                                  # eyes
+            pr.draw_circle(cx + dx, cy - 1, 4, LCD_BG)
+            pr.draw_circle(cx + dx, cy - 1, 2, INK)
+        pr.draw_line(cx - 7, cy + 12, cx + 7, cy + 12, INK)  # mouth
+
+    def _draw_hire_role(self, lx, ly, lw, lh) -> None:
+        c = self._cand or {}
+        who = (c.get("name", "") or "").split(" ")[0] or "—"
+        self._draw_status_strip(lx, ly, lw, f"Role for {_short(who, 12)}")
+        cash = self.hire.cash() if self.hire else 0
+        cashlbl = f"${cash:,}"
+        cw = pr.measure_text(cashlbl, 12)
+        pr.draw_text(cashlbl, lx + lw - cw - 8, ly + 24, 12, INK_DIM)
+        pr.draw_text("Pick a role:", lx + 8, ly + 24, 13, INK_DIM)
+        if self._hire_flash:
+            pr.draw_text(_short(self._hire_flash, 30), lx + 6, ly + lh - 16, 12, INK)
+        rows = self._role_rows()
+        start, ys, rh, _, _ = self._list_view_h(len(rows), top=ly + 44, bottom_pad=20)
         for i, ry in enumerate(ys):
-            it = rows[start + i]
+            kind, text, _color, rate = rows[start + i]
+            if kind == "h":                                  # department header
+                pr.draw_text(text.upper(), lx + 6, ry + 2, 12, INK)
+                pr.draw_line(lx + 6, ry + rh - 2, lx + lw - 6, ry + rh - 2, INK_DIM)
+                continue
             selected = (start + i) == self.sel
-            locked = self._hire_locked(it)
             if selected:
                 pr.draw_rectangle(lx + 2, ry - 2, lw - 4, rh, HILITE)
             fg = LCD_BG if selected else INK
             dim = LCD_BG if selected else INK_DIM
-            nx = lx + 8
-            if locked:                              # padlock glyph before the name
-                pr.draw_rectangle(nx, int(ry) + 6, 9, 7, fg)
-                pr.draw_ring(pr.Vector2(nx + 4, int(ry) + 6), 2, 4, 180, 360, 12, fg)
-                nx += 14
-            name = it["name"]
-            while name and pr.measure_text(name, 14) > lw - 80:
-                name = name[:-1]
-            pr.draw_text(name, nx, ry, 14, fg)
-            cost = it.get("unlock", 0) if locked else it.get("price", 0)
-            tag = f"${cost:,}"
+            tag = f"${rate:,}"
             tw = pr.measure_text(tag, 12)
+            title = text
+            while title and pr.measure_text(title, 14) > lw - tw - 30:
+                title = title[:-1]
+            pr.draw_text(title, lx + 16, ry, 14, fg)
             pr.draw_text(tag, lx + lw - tw - 8, ry + 1, 12, dim)
-
-    def _draw_hire_role(self, lx, ly, lw, lh) -> None:
-        item = self._hire_item
-        who = _short(item["name"], 18) if item else "—"
-        self._draw_status_strip(lx, ly, lw, "Pick a role")
-        pr.draw_text(f"Hire {who} as:", lx + 8, ly + 24, 13, INK_DIM)
-        roles = self.hire.roles() if self.hire else []
-        if self._hire_flash:
-            pr.draw_text(_short(self._hire_flash, 30), lx + 6, ly + lh - 16, 12, INK_DIM)
-        start, ys, rh, _, _ = self._list_view_h(len(roles), top=ly + 44, bottom_pad=20)
-        for i, ry in enumerate(ys):
-            role = roles[start + i]
-            selected = (start + i) == self.sel
-            if selected:
-                pr.draw_rectangle(lx + 2, ry - 2, lw - 4, rh, HILITE)
-            fg = LCD_BG if selected else INK
-            r = role
-            while r and pr.measure_text(r, 14) > lw - 20:
-                r = r[:-1]
-            pr.draw_text(r, lx + 8, ry, 14, fg)
 
     def _list_view_h(self, n: int, top: int | None = None, bottom_pad: int = 0):
         """Like _list_view but lets the Hire screens reserve a top header and a
@@ -978,9 +1003,7 @@ class PhonePanel:
         elif self.screen == TODO:
             left, right = "", "Back"
         elif self.screen == HIRE:
-            left, right = ("Unlock" if (self._hire_rows() and
-                           self._hire_locked(self._hire_rows()[min(self.sel, len(self._hire_rows()) - 1)]))
-                           else "Pick"), "Back"
+            left, right = "Add", "Back"
         elif self.screen == HIRE_ROLE:
             left, right = "Hire", "Back"
         elif self.screen == CALL:

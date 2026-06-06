@@ -33,6 +33,54 @@ ROLES = [
     # routed to their actors by keyword in backend ROLE_PROFILES.
 ]
 
+# Hire rate per role — what it costs to bring this title on board. Roughly scales
+# with seniority / specialization; surfaced as the "pricing rate" beside each role
+# in the phone Hire app's department grid. Anything not listed falls back to
+# DEFAULT_RATE.
+DEFAULT_RATE = 2_500
+ROLE_RATES = {
+    "Software Engineer": 3_000,
+    "Data Scientist": 3_500,
+    "DevOps Engineer": 4_000,
+    "Observability Engineer": 3_500,
+    "Product Designer": 3_000,
+    "Graphic Designer": 2_500,
+    "Animator": 3_000,
+    "UX Researcher": 2_500,
+    "Marketing Lead": 3_000,
+    "Blogger": 2_000,
+    "Sales Rep": 2_000,
+    "Financial Analyst": 3_000,
+    "Sheets Analyst": 2_500,
+    "Operations Manager": 3_500,
+    "Support Specialist": 1_500,
+    "Executive Assistant": 2_000,
+    "Document Manager": 2_000,
+    "Research Analyst": 3_500,
+    "Market Analyst": 3_500,
+    "Recruiter": 2_500,
+    "Human Resources Manager": 3_500,
+}
+
+
+def role_rate(title: str) -> int:
+    """Hire cost for a role title (see ROLE_RATES)."""
+    return ROLE_RATES.get(title, DEFAULT_RATE)
+
+
+def departments() -> list[tuple[str, list[tuple[str, "pr.Color", int]]]]:
+    """Roles grouped by department in first-seen order. Each role is
+    (title, accent_color, rate). Drives the Hire app's role grid."""
+    order: list[str] = []
+    groups: dict[str, list] = {}
+    for title, dept, color in ROLES:
+        if dept not in groups:
+            groups[dept] = []
+            order.append(dept)
+        groups[dept].append((title, color, role_rate(title)))
+    return [(d, groups[d]) for d in order]
+
+
 # A diverse pool of first names.
 FIRST_NAMES = [
     "Amara", "Liang", "Sofia", "Omar", "Priya", "Diego", "Mei", "Kwame",
@@ -70,6 +118,18 @@ def generate(index: int, used_names: set[str]) -> dict:
         "dept": dept,
         "color": color,
         "tone_idx": random.randrange(len(config.SKIN_TONES)),
+    }
+
+
+def random_look() -> dict:
+    """A full random appearance for an auto-generated hire candidate: random
+    skin / hair color / hairstyle / eye color indices (the same keys _spawn_agent
+    and _commit_hire expect)."""
+    return {
+        "skin_idx": random.randrange(len(config.SKIN_TONES)),
+        "hair_idx": random.randrange(len(config.HAIR_COLORS)),
+        "hair_style": random.randrange(len(config.HAIRSTYLES)),
+        "eye_idx": random.randrange(len(config.EYE_COLORS)),
     }
 
 

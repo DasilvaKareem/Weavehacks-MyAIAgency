@@ -36,6 +36,8 @@ from game.entities import Character, make_ceo
 from game.onboarding import OnboardingScreen
 from game.dossier_panel import DossierPanel
 from game.investor_panel import InvestorPanel
+from game import market as market_mod
+from game.market_panel import MarketPanel
 from game.prologue import Prologue
 from game.menu import MainMenu
 from game.company_link import CompanyLink
@@ -116,6 +118,10 @@ class Game:
         self.robin = Character(name=COFOUNDER_NAME, role="Co-founder", x=0.0, z=0.0,
                                color=pr.Color(90, 210, 230, 255), dept="Founder",
                                model="Suit_Male.gltf", yaw=180.0)
+        # Once you've won Robin over, you can tell him (Nokia → Co-founder → "Follow
+        # me") to walk with you — trailing you through the office AND out in the park.
+        # Toggled from the phone; the per-frame trailing lives in _update_companion.
+        self.robin_following = False
         # Your first intern: hangs out in a city park (Founders Green) with a "!"
         # overhead. Walk up + E in the park to take them on — they join the company
         # for free. Positioned/bound to its park in _enter_park; gated on the
@@ -168,6 +174,8 @@ class Game:
         self.dialogue = dialogue.load()    # NPC story-beat lines (assets/dialogue.json)
         self.dossier = DossierPanel()      # view/edit the company decisions agents read
         self.investor = InvestorPanel()    # pitch the VC for a funding round
+        self.market = market_mod.Market.load(self.link)   # idle stock-market state
+        self.market_panel = MarketPanel()  # bank/broker trading terminal
         self.chat = ChatPanel(self.link)
         self.shop = ShopPanel(load_catalog())
         self.hire_catalog = load_agents()          # marketplace models for the phone Hire app
@@ -186,19 +194,25 @@ class Game:
         # the whole roster (any room). The hire bridge hands the phone just the few
         # callables it needs, so PhonePanel stays decoupled from the Game.
         hire_bridge = SimpleNamespace(
-            catalog=lambda: self.hire_catalog,
-            roles=lambda: [t for t, _, _ in roster.ROLES],
+            new_candidate=self._new_candidate,       # () -> fresh random candidate dict
+            departments=roster.departments,          # () -> [(dept, [(title, color, rate)])]
+            role_rate=roster.role_rate,              # (title) -> int
+            roles=lambda: [t for t, _, _ in roster.ROLES],   # kept for parity
             cash=lambda: int(self.cash),
-            unlocked=lambda: self.unlocked,
             can_hire=lambda: self.has_desk_space,
-            unlock=self._unlock_catalog_item,        # (item) -> bool
-            hire=self._hire_from_catalog,            # (item, role_title) -> bool
+            hire=self._hire_candidate,               # (candidate, role_title) -> bool
             is_hr=lambda role: role in self._HR_ROLES,
             hire_by_text=self._hr_hire_from_text,    # (text) -> ack str | None
         )
+        # Co-founder follow toggle, handed to the phone the same decoupled way as the
+        # hire bridge: the phone flips the flag, the game does the walking.
+        follow_bridge = SimpleNamespace(
+            is_following=lambda: self.robin_following,
+            set_following=self._set_robin_following,
+        )
         self.phone = PhonePanel(self.link, self.coordinator,
                                 lambda: self.all_agents, self.inbox, self.taskboard,
-                                hire=hire_bridge)
+                                hire=hire_bridge, follow=follow_bridge)
         self.inbox.post("Company.AI",
                         "Welcome! Your team and the neighborhood reach you here. "
                         "Open the phone (N) and tap a message to read it.",
@@ -275,6 +289,7 @@ class Game:
         self._park_return = None
         self.taskboard = tasks.TaskBoard(set())
         self.phone.board = self.taskboard
+        self.market = market_mod.Market.fresh()       # fresh portfolio for the new run
         for lst in (self.all_agents, self.all_brains, self.agents, self.brains):
             lst.clear()
         self.characters[:] = [self.player.ch]
@@ -330,6 +345,32 @@ class Game:
                         f"Wire's on the way - {rnd.name} round closed for ${rnd.amount:,}. "
                         f"Don't make us regret it.",
                         kind="system", subject=f"✓ {rnd.name} raised", ts=pr.get_time())
+
+    def _do_market_action(self, action) -> None:
+        """Apply a bank/broker trade to cash + the market (single money source), then
+        persist. Buys spend cash; sells/withdrawals return it."""
+        if not action:
+            return
+        kind = action[0]
+        chunk = market_mod.BUY_CHUNK
+        if kind == "buy":
+            spend = min(self.cash, action[2])
+            if spend > 0:
+                self.cash -= self.market.buy(action[1], spend)
+        elif kind == "sell":
+            self.cash += self.market.sell(action[1], action[2])
+        elif kind == "sellall":
+            self.cash += self.market.sell_all(action[1])
+        elif kind == "deposit":
+            amt = min(self.cash, chunk)
+            self.cash -= self.market.deposit_savings(amt)
+        elif kind == "withdraw":
+            self.cash += self.market.withdraw_savings(chunk)
+        elif kind == "withdrawall":
+            self.cash += self.market.withdraw_savings(self.market.savings)
+        else:
+            return
+        self.market.save(self.link)
 
     def _refresh_tasks(self) -> None:
         """Auto-complete any to-do whose condition now holds (a role hired, a
@@ -745,42 +786,50 @@ class Game:
             return "Happy to staff up — which role? e.g. \"hire an engineer\"."
         m = re.search(r"\b(\d{1,2})\b", t)
         n = max(1, min(int(m.group(1)) if m else 1, 5))
-        model = next((it for it in self.hire_catalog
-                      if it.get("category", "office") == "office" and not it.get("locked")),
-                     self.hire_catalog[0])
+        rate = roster.role_rate(role)
         hired = 0
         for _ in range(n):
-            if self._hire_from_catalog(model, role):
+            if self._hire_candidate(self._new_candidate(), role):
                 hired += 1
             else:
                 break
         if hired == 0:
             if not self.has_desk_space:
                 return "We're out of desks — lease another building first."
-            return f"Short on cash for that — a {role} runs ${model.get('price', 0):,}."
+            return f"Short on cash for that — a {role} runs ${rate:,}."
         plural = "s" if hired > 1 else ""
         return f"Done — brought {hired} {role}{plural} on board."
 
-    def _unlock_catalog_item(self, item: dict) -> bool:
-        """Buy a premium marketplace model from the phone Hire app (one-time fee)."""
-        return self._unlock_outfit(item["id"], item.get("unlock", 0))
+    def _new_candidate(self) -> dict:
+        """A fresh, unique hire candidate for the phone Hire app: an auto-generated
+        first+last name, a random (free) character model, and a random look. The
+        role and its rate are chosen on the next screen — see _hire_candidate."""
+        name = roster.random_name(self.used_names)
+        pool = [it for it in self.hire_catalog
+                if not it.get("locked") or it["id"] in self.unlocked]
+        it = random.choice(pool) if pool else None
+        return {
+            "name": name,
+            "model": it["model"] if it else None,
+            "char_name": it["name"] if it else "",
+            "appearance": roster.random_look(),
+        }
 
-    def _hire_from_catalog(self, item: dict, role_title: str) -> bool:
-        """One-tap hire used by the phone Hire app and the HR agent: take a catalog
-        model (`item`) + a chosen `role_title`, build a candidate with a sensible
-        default look, and commit. Returns True if the hire went through."""
-        if not self.has_desk_space or self.cash < item.get("price", config.HIRE_COST):
+    def _hire_candidate(self, cand: dict, role_title: str) -> bool:
+        """Hire an auto-generated candidate (phone Hire app / HR agent): stamp the
+        chosen role + its rate onto the candidate's name & look, and commit. Returns
+        True if the hire went through (had a desk and could afford the rate)."""
+        rate = roster.role_rate(role_title)
+        if not self.has_desk_space or self.cash < rate:
             return False
-        cand = roster.generate(len(self.all_agents), self.used_names)
+        cand = dict(cand)                              # don't mutate the caller's dict
         for title, dept, color in roster.ROLES:        # stamp the requested role
             if title == role_title:
                 cand["role"], cand["dept"], cand["color"] = title, dept, color
                 break
-        cand["model"] = item["model"]
-        cand["cost"] = item["price"]
-        cand["char_name"] = item["name"]
-        appearance = {"skin_idx": cand.get("tone_idx", 1), "hair_idx": cand.get("hair_idx", 0),
-                      "hair_style": cand.get("hair_style", 0), "eye_idx": cand.get("eye_idx", 0)}
+        cand["cost"] = rate
+        appearance = cand.get("appearance") or {"skin_idx": 1, "hair_idx": 0,
+                                                "hair_style": 0, "eye_idx": 0}
         before = len(self.all_agents)
         self._commit_hire(cand, appearance)
         return len(self.all_agents) > before
@@ -908,6 +957,47 @@ class Game:
                 best_i, best_d = i, hit.distance
         return best_i
 
+    # -- co-founder follow ("Robin, walk with me") ----------------------------
+    def _set_robin_following(self, on: bool) -> None:
+        """Phone-driven toggle for Robin trailing the CEO. Switching it on drops
+        him in beside you wherever you're standing (office or park) so he never has
+        to sprint across the map to catch up."""
+        self.robin_following = bool(on)
+        if self.robin_following:
+            self._snap_robin_to_ceo()
+
+    def _snap_robin_to_ceo(self) -> None:
+        """Place Robin a step behind/beside the CEO. Used when follow turns on and
+        on every mode/room switch, so he arrives with you instead of teleporting in
+        from his last position in the other space."""
+        ceo = self.player.ch
+        self.robin.x, self.robin.y, self.robin.z = ceo.x + 1.2, 0.0, ceo.z - 1.2
+        self.robin.yaw = ceo.yaw
+
+    def _update_companion(self, dt: float) -> None:
+        """Trail the CEO when follow is on — identical steering in the office and the
+        park. Uses direct move_toward (no navgrid, which the park doesn't have): the
+        CEO already threads the obstacles, and Robin keeps a gap behind, running to
+        close a big lead and idling (facing you) once he's caught up."""
+        if not self.robin_following:
+            return
+        ceo, robin = self.player.ch, self.robin
+        dx, dz = ceo.x - robin.x, ceo.z - robin.z
+        dist = math.hypot(dx, dz)
+        GAP = 1.8
+        if dist > GAP + 0.2:
+            tx, tz = ceo.x - dx / dist * GAP, ceo.z - dz / dist * GAP
+            running = dist > 6.0
+            speed = locomotion.RUN_SPEED if running else locomotion.WALK_SPEED
+            locomotion.move_toward(robin, tx, tz, speed, dt)
+            if self.mode == "park":
+                robin.x, robin.z = self.park.collide(robin.x, robin.z)
+            locomotion.apply_anim(robin, moving=True, running=running)
+        else:
+            locomotion.face_dir(robin, dx, dz, dt)
+            locomotion.apply_anim(robin, moving=False)
+        robin.update(dt, self.registry)
+
     # -- office park ----------------------------------------------------------
     def _enter_park(self) -> None:
         # Leaving a quest building: restore your real office and drop the visit state.
@@ -929,6 +1019,8 @@ class Game:
         else:
             ceo.x, ceo.z = self.park.spawn
         ceo.y, ceo.yaw = 0.0, 0.0       # face downtown / HQ (toward +z)
+        if self.robin_following:         # bring your co-founder out into the city too
+            self._snap_robin_to_ceo()
         # Point the camera the same way (behind the CEO, looking at HQ), else it
         # spawns facing away and HQ is off-screen behind you.
         self.camera.yaw = math.radians(180.0)
@@ -1013,6 +1105,8 @@ class Game:
         ceo = self.player.ch
         ceo.x, ceo.z = entry if entry is not None else \
             self.plan.grid_to_world(self.plan.cols / 2 - 0.5, self.plan.rows - 2)
+        if self.robin_following:           # co-founder steps into the new room with you
+            self._snap_robin_to_ceo()
 
     # -- quest buildings: walk in, talk to the NPC inside ---------------------
     QUEST_PLAN = "hq"          # default interior floor used for every quest building
@@ -1025,7 +1119,8 @@ class Game:
             self._park_return = (self.player.ch.x, self.player.ch.z)
         self._saved_office = (self.current_building, self.interior)
         self._quest_building = npc
-        self.interior = interior.build_interior(npc.id, None, self.QUEST_PLAN, self.plans)
+        self.interior = interior.build_interior(
+            npc.id, None, getattr(npc, "plan", None) or self.QUEST_PLAN, self.plans)
         self.current_building = None
         self.mode = "office"
         self.scene.show_records = False        # the Files cabinet is your office only
@@ -1096,6 +1191,9 @@ class Game:
         if self.investor.open:                   # Apex Ventures: the pitch panel
             self._do_investor_action(self.investor.draw(self.company, self._rounds_raised()))
             return
+        if self.market_panel.open:               # bank/broker: the trading terminal
+            self._do_market_action(self.market_panel.draw(self.market, self.cash))
+            return
         if self._quest_input is not None:        # mid-conversation: the modal handles it
             self._draw_quest_input()
             return
@@ -1113,6 +1211,14 @@ class Game:
         brains. Otherwise complete it outright."""
         if npc.task == "raise_round":          # the VC firm: an investor meeting, not a to-do
             self.investor.open_panel()
+            self._e_cooldown = 8
+            return
+        if getattr(npc, "market", None):       # the bank / broker: the idle trading terminal
+            pending = npc.pending(self.taskboard.done)
+            if pending:                        # do its one-time quest first (the bank's pricing)
+                self._open_quest_task(npc, pending[0])
+                return
+            self.market_panel.open_panel(npc.market)
             self._e_cooldown = 8
             return
         pending = npc.pending(self.taskboard.done)
@@ -1310,6 +1416,7 @@ class Game:
                 self.intern.yaw = math.degrees(math.atan2(ceo.x - self.intern.x,
                                                           ceo.z - self.intern.z))
                 self.intern.update(dt, self.registry)
+            self._update_companion(dt)           # Robin trails you across the park
         self.pedestrians.update(dt, ceo.x, ceo.z, self.registry)  # ambient crowd
         near = self.park.nearest(ceo.x, ceo.z)
         # Quest-stop NPC buildings (Chamber of Commerce, …) are only offered when no
@@ -1344,11 +1451,14 @@ class Game:
         self.pedestrians.draw(self.registry)
         if show_intern:
             self.intern.draw(self.registry)
+            # same cyan ring + "!" diamond as every quest stop (one shared impl)
+            self.park.draw_quest_indicator(self.intern.x, self.intern.z,
+                                           self.intern.height + 1.4)
+        if self.robin_following:
+            self.robin.draw(self.registry)
         ceo.draw(self.registry)
         pr.end_mode_3d()
         self._draw_park_overlay(near, near_npc)
-        if show_intern:
-            self._draw_intern_marker()
         if self._quest_input is not None:        # quest-stop decision capture, on top
             self._draw_quest_input()
         self._do_dossier_action(self.dossier.draw(self.company))
@@ -1378,32 +1488,6 @@ class Game:
         if sub:
             sw = pr.measure_text(sub, 13)
             pr.draw_text(sub, sx - sw // 2, sy + 18, 13, sub_color)
-
-    def _draw_intern_marker(self) -> None:
-        """A bobbing green "!" and prompt over the park intern until you take them on.
-        Drawn in the 2D overlay pass, projecting the intern's head to the screen."""
-        r = self.intern
-        cam = self.camera.camera
-        fx, fz = cam.target.x - cam.position.x, cam.target.z - cam.position.z
-        if (r.x - cam.position.x) * fx + (r.z - cam.position.z) * fz <= 0:
-            return                                  # behind the camera
-        bob = math.sin(pr.get_time() * 3.0) * 0.18
-        sp = pr.get_world_to_screen(
-            pr.Vector3(r.x, r.y + r.height + 0.9 + bob, r.z), cam)
-        if sp.x < 0 or sp.x > config.WINDOW_WIDTH:
-            return
-        sx, sy = int(sp.x), int(sp.y)
-        pr.draw_circle(sx, sy, 15, pr.Color(0, 0, 0, 120))
-        pr.draw_circle(sx, sy, 13, pr.Color(150, 220, 110, 255))   # the "!" disc
-        bw = pr.measure_text("!", 26)
-        pr.draw_text("!", sx - bw // 2, sy - 16, 26, pr.Color(20, 40, 12, 255))
-        near = (math.hypot(r.x - self.player.ch.x, r.z - self.player.ch.z)
-                <= parkmod.REACH)
-        where = self._intern_park.name if self._intern_park else "the park"
-        hint = "Press E: take on a free intern" if near else f"A keen intern · {where}"
-        hw = pr.measure_text(hint, 16)
-        pr.draw_rectangle(sx - hw // 2 - 6, sy + 20, hw + 12, 24, pr.Color(0, 0, 0, 170))
-        pr.draw_text(hint, sx - hw // 2, sy + 24, 16, pr.Color(170, 235, 150, 255))
 
     def _draw_clock(self) -> None:
         """Top-center chip naming the current time-of-day phase and season."""
@@ -1463,6 +1547,14 @@ class Game:
             self._label_3d(p.name, "City Park", pr.Color(150, 230, 175, 255),
                            p.x, 3.6, p.z, 16, main_color=pr.Color(170, 235, 190, 255))
 
+        # The park intern: name + action label under the shared quest indicator.
+        if self._intern_park is not None and not self.taskboard.is_done("intern"):
+            it = self.intern
+            inn = math.hypot(it.x - ceo.x, it.z - ceo.z) <= parkmod.REACH
+            sub = "Press E: join your team (free)" if inn else "Your first intern"
+            self._label_3d(it.name, sub, pr.Color(150, 230, 175, 255),
+                           it.x, it.height + 0.4, it.z, 16,
+                           main_color=pr.Color(170, 235, 190, 255))
 
         # top bar: cash + rent ledger
         pr.draw_rectangle(0, 0, config.WINDOW_WIDTH, 56, pr.Color(20, 24, 34, 230))
@@ -1575,7 +1667,12 @@ class Game:
                 continue
 
             # Rent accrues no matter where the CEO is standing.
-            self.cash -= self.park.tick_rent(dt)
+            rent = self.park.tick_rent(dt)
+            self.cash -= rent
+            # The idle market ticks everywhere too — money makes money while you roam.
+            self.market.update(dt)
+            if rent:                    # once per in-game month: checkpoint the market
+                self.market.save(self.link)   # (stamps last_seen for offline catch-up)
 
             # Advance the day/night cycle and feed it to the character shader (the
             # sky color is read per-frame in each draw path). T peeks at the next
@@ -1604,13 +1701,14 @@ class Game:
             self._refresh_tasks()           # tick the plot's auto-completing to-dos
             # The to-do list lives only on the phone now (N → To-Do) — no L panel.
             # C toggles the Company Dossier (view/edit the decisions agents read).
-            if pr.is_key_pressed(pr.KEY_C) and not self.chat.open and not self.dossier.capturing:
+            if pr.is_key_pressed(pr.KEY_C) and not self.chat.open \
+                    and not self.dossier.capturing and not self.market_panel.open:
                 self.dossier.toggle()
             # N toggles the Nokia phone from anywhere (office OR city) — press again to
             # close. Skipped while a text field owns the keyboard (incl. the phone's own
             # message screens, where N should type a letter, not slam the phone shut).
             if pr.is_key_pressed(pr.KEY_N) and not self.chat.open \
-                    and not self.dossier.capturing \
+                    and not self.dossier.capturing and not self.market_panel.open \
                     and not self.phone.capturing and self._quest_input is None:
                 if self.phone.open:
                     self.phone.close()
@@ -1634,7 +1732,7 @@ class Game:
                 self.jobs.update()
             elif self.elevator_open or self.shop.open:
                 pass  # the modal handles its own input inside draw()
-            elif self.dossier.open or self.investor.open:
+            elif self.dossier.open or self.investor.open or self.market_panel.open:
                 pass  # a full-screen panel is up; it's modal — freeze movement/keys
             elif self._quest_input is not None:
                 pass  # talking to a quest NPC; the dialogue modal owns the keyboard
@@ -1705,14 +1803,18 @@ class Game:
 
             for ch in self.characters:
                 ch.update(dt, self.registry)
+            self._update_companion(dt)      # Robin trails you around the office too
 
             pr.begin_drawing()
             pr.clear_background(self.daylight.sky_color())  # time-of-day sky
 
             sel = self.agents[self.selected] if 0 <= self.selected < len(self.agents) else None
-            self.scene.draw_world(self.characters, self.registry, self.camera.camera, sel)
+            # Robin isn't part of the roster (no desk/brain/selection), so he's drawn
+            # alongside the room's characters only while he's following you.
+            draw_chars = self.characters + [self.robin] if self.robin_following else self.characters
+            self.scene.draw_world(draw_chars, self.registry, self.camera.camera, sel)
             self._draw_portals_3d(self.camera.camera)
-            draw_world_labels(self.characters, self.camera.camera)
+            draw_world_labels(draw_chars, self.camera.camera)
             self._draw_agent_status()
             self._draw_meeting_badges()
             self._draw_bubbles()
@@ -1766,6 +1868,7 @@ class Game:
 
             pr.end_drawing()
 
+        self.market.save(self.link)        # checkpoint the portfolio + last_seen on quit
         self.chat.voice.shutdown()
         self.meeting_link.shutdown()
         self.coordinator.shutdown()

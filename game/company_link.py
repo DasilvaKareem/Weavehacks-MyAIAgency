@@ -24,6 +24,8 @@ from backend import composio_tools
 CEO_PROFILE_KEY = "ceo_profile"
 # Completed quest-line task keys (the game's plot progress), stored as a JSON list.
 TASKS_KEY = "task_progress"
+# The idle-market state (asset prices, holdings, savings, last-seen), a JSON blob.
+MARKET_KEY = "market_state"
 # Outfit ids the player has purchased (premium models + suit styles), a JSON list.
 # Once an id is here the outfit is reusable for free on any CEO/agent.
 UNLOCKS_KEY = "unlocked_outfits"
@@ -107,6 +109,20 @@ class CompanyLink:
         """Persist completed task keys (the game's plot progress)."""
         self.store.set_setting(TASKS_KEY, json.dumps(sorted(done)))
 
+    def load_market(self) -> dict | None:
+        """The saved idle-market state (prices/holdings/savings), or None."""
+        raw = self.store.get_setting(MARKET_KEY)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
+    def save_market(self, state: dict) -> None:
+        """Persist the idle-market state so it grows while you're away."""
+        self.store.set_setting(MARKET_KEY, json.dumps(state))
+
     def reset_company(self) -> None:
         """Wipe the save for a New World: fire every agent and clear the CEO
         profile + task progress. Unlocked outfits are kept (they're paid for)."""
@@ -115,6 +131,7 @@ class CompanyLink:
         self.store.set_setting(CEO_PROFILE_KEY, "")
         self.store.set_setting(TASKS_KEY, "")
         self.store.set_setting(COMPANY_KEY, "")
+        self.store.set_setting(MARKET_KEY, "")
 
     def load_unlocks(self) -> set[str]:
         """The set of purchased outfit ids (empty on a fresh save)."""

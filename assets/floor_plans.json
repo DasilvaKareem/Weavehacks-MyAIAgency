@@ -72,6 +72,19 @@
         {"name": "wing_west", "kind": "wing_west", "col": 1.5, "row": 5.0},
         {"name": "wing_east", "kind": "wing_east", "col": 10.5, "row": 5.0}
       ]
+    },
+
+    "bank": {
+      "name": "Bank Lobby",
+      "cols": 14, "rows": 11,
+      "desk_cols": [], "desk_rows": [],
+      "furniture_seed": 909,
+      "zones": [
+        {"name": "meeting", "kind": "meeting", "col": 7.0, "row": 3.5},
+        {"name": "lounge", "kind": "lounge", "col": 3.0, "row": 8.0},
+        {"name": "coffee", "kind": "coffee", "col": 11.5, "row": 8.0},
+        {"name": "door", "kind": "door", "col": 7.0, "row": 9.0}
+      ]
     }
   }
 }
