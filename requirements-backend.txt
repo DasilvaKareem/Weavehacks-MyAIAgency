@@ -15,6 +15,10 @@ mcp>=1.2
 daytona>=0.18
 # Composio — Google/SaaS app agents (COMPOSIO_API_KEY + COMPOSIO_USER_ID).
 composio-langchain>=0.13
+# W&B Weave — LLM observability. Auto-traces every Gemini/LangChain call once
+# weave.init() runs (WANDB_API_KEY); also powers the Observability Engineer agent
+# that reads those traces. See backend/observability.py + backend/weave_tools.py.
+weave>=0.51
 # Firebase Realtime Database — realtime agent meetings + presence (hybrid with
 # local SQLite; see backend/meeting_store.py + FIREBASE_* in .env).
 firebase-admin>=7.0
