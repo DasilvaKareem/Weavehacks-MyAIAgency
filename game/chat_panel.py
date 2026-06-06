@@ -247,7 +247,9 @@ class ChatPanel:
         if self.command_handler is not None:
             ack = self.command_handler(self.agent, text)
             if ack is not None:
+                vname = self._voice_name
                 self.close()
+                voice.speak(ack, vname)        # speak the ack aloud, then release the bot
                 return
         if self.link.send(self.agent.backend_id, text.strip()):
             self.input = ""

@@ -70,7 +70,9 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "bureau": (12, 12), "signshop": (13, 9), "brandstudio": (7, 10),
             "citybank": (13, 11),
             # The Startup Incubator hosts the Business Model Canvas workshop.
-            "incubator": (10, 7)}
+            "incubator": (10, 7),
+            # Storefronts: The Outfitters by the brand studio; staffing up north.
+            "outfitters": (7, 9), "staffing": (11, 7)}
 
 GROUND = pr.Color(176, 178, 184, 255)     # sidewalk concrete
 ASPHALT = pr.Color(64, 66, 72, 255)       # road
@@ -110,6 +112,11 @@ def load_npc(path: str = LOTS_PATH) -> list[dict]:
         return json.load(f).get("npc", [])
 
 
+def load_parks(path: str = LOTS_PATH) -> list[dict]:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f).get("parks", [])
+
+
 @dataclass
 class NpcBuilding:
     """A non-leasable flavor shop (casino, bakery, …). `sign` is an optional GLB
@@ -118,8 +125,9 @@ class NpcBuilding:
     When `task` is set the building is a QUEST STOP: walking up and pressing E
     completes that tasks.py to-do, pays `reward` seed cash once, and posts `blurb`
     to the inbox. A `tasks` LIST instead makes it a WORKSHOP that steps through
-    several to-dos one visit at a time (e.g. the Business Model Canvas). Plain flavor
-    shops leave both empty."""
+    several to-dos one visit at a time (e.g. the Business Model Canvas). When
+    `store` is set the building is a STOREFRONT (e.g. "outfit" → the wardrobe shop):
+    walking up and pressing E opens that store. Plain flavor shops leave all empty."""
     id: str
     name: str
     model: str
@@ -131,10 +139,20 @@ class NpcBuilding:
     reward: int = 0
     blurb: str = ""
     tasks: tuple = ()          # workshop: an ordered list of to-do keys
+    store: str | None = None   # storefront kind ("outfit" = the wardrobe shop)
 
     @property
     def is_quest_stop(self) -> bool:
         return self.task is not None or bool(self.tasks)
+
+    @property
+    def is_store(self) -> bool:
+        return self.store is not None
+
+    @property
+    def interactive(self) -> bool:
+        """Walk-up + E does something here (a quest to-do or a storefront)."""
+        return self.is_quest_stop or self.is_store
 
     def task_keys(self) -> tuple:
         """Every to-do this stop can complete (one for a shop, many for a workshop)."""
@@ -146,6 +164,30 @@ class NpcBuilding:
 
     def is_complete(self, done: set) -> bool:
         return not self.pending(done)
+
+
+@dataclass
+class GreenSpace:
+    """A named city park: a decorative green block that stands in place of a
+    backdrop building at its grid address. Walkable, non-interactive — grass +
+    scattered seasonal trees (added to the shared tree list) + a central fountain
+    + a floating name label (drawn by the overlay in main.py)."""
+    id: str
+    name: str
+    x: float
+    z: float
+
+
+# City-park look. The plot fills most of a block (16 wide); season recolours the
+# lawn the way SEASON_SUFFIX recolours the trees, so a park greens/browns/snows in
+# step with the rest of the world.
+PARK_HALF = 6.6        # half-size of the square lawn (a touch under the block pitch)
+PARK_GRASS = {"Summer": (104, 156, 84), "Autumn": (158, 142, 80),
+              "Winter": (226, 230, 236), "Dead": (132, 118, 90)}
+PARK_PATH = (190, 184, 168)        # crushed-stone path crossing the lawn
+PARK_KERB = (150, 152, 158)        # stone fountain basin + kerb
+PARK_WATER = {"Summer": (120, 170, 205), "Autumn": (120, 170, 205),
+              "Winter": (210, 224, 236), "Dead": (110, 130, 150)}
 
 
 def _c(rgb, a: int = 255) -> pr.Color:
@@ -365,13 +407,15 @@ class _ModelCache:
 
 
 class Park:
-    def __init__(self, lots: list[dict], npc: list[dict] | None = None) -> None:
+    def __init__(self, lots: list[dict], npc: list[dict] | None = None,
+                 parks: list[dict] | None = None) -> None:
         self.buildings: list[Building] = []
         self.npc: list[NpcBuilding] = [
             NpcBuilding(id=n["id"], name=n["name"], model=n["model"], sign=n.get("sign"),
                         x=float(n["x"]), z=float(n["z"]), awning=tuple(n["awning"]),
                         task=n.get("task"), reward=int(n.get("reward", 0)),
-                        blurb=n.get("blurb", ""), tasks=tuple(n.get("tasks", ())))
+                        blurb=n.get("blurb", ""), tasks=tuple(n.get("tasks", ())),
+                        store=n.get("store"))
             for n in (npc if npc is not None else load_npc())
         ]
         for lot in lots:
@@ -386,6 +430,16 @@ class Park:
         for n in self.npc:
             if n.id in NPC_ADDR:
                 n.x, n.z = block_pos(*NPC_ADDR[n.id])
+        # City parks: named green spaces at grid addresses. Each one's block is
+        # reserved in _build_city so no backdrop building spawns under the lawn.
+        src = parks if parks is not None else load_parks()
+        self.parks: list[GreenSpace] = []
+        self._park_addrs: set[tuple[int, int]] = set()
+        for p in src:
+            a, s = int(p["ave"]), int(p["st"])
+            x, z = block_pos(a, s)
+            self.parks.append(GreenSpace(id=p["id"], name=p["name"], x=x, z=z))
+            self._park_addrs.add((a, s))
         self._models = _BuildingModels()
         self._tree_models = _TreeModels()
         self._car_models = _ModelCache()      # vehicle GLBs
@@ -409,6 +463,7 @@ class Park:
         rng = random.Random(SCENERY_SEED)
         reserved = set(LOT_ADDR.values()) | set(NPC_ADDR.values())
         reserved |= {(10, 9), (9, 9), (11, 9)}   # keep the spawn lane clear
+        reserved |= self._park_addrs             # a park lawn, not a building, here
         city = []     # (model, x, z, yaw, scale_mul)
         for a in range(1, AVENUES + 1):
             for s in range(1, STREETS + 1):
@@ -432,6 +487,18 @@ class Park:
                     x, z = block_pos(a + 0.5, s + 0.5)        # at the intersection corner
                     trees.append((x, z, rng.choice(TREE_FAMILIES), rng.randint(1, 5),
                                   rng.uniform(0.0, 360.0), rng.uniform(0.8, 1.25)))
+
+        # Plant a small grove around each park's edges (clear of the centre fountain
+        # and the path cross), reusing the same seasonal tree pipeline as the street
+        # trees so a park changes with the seasons too.
+        for p in self.parks:
+            edge = PARK_HALF - 1.4
+            for ox, oz in ((-edge, -edge), (edge, -edge), (-edge, edge), (edge, edge),
+                           (0.0, -edge), (0.0, edge)):
+                jx, jz = rng.uniform(-0.6, 0.6), rng.uniform(-0.6, 0.6)
+                trees.append((p.x + ox + jx, p.z + oz + jz,
+                              rng.choice(TREE_FAMILIES), rng.randint(1, 5),
+                              rng.uniform(0.0, 360.0), rng.uniform(0.9, 1.3)))
         return city, trees
 
     def height_mult(self, x: float, z: float) -> float:
@@ -498,11 +565,11 @@ class Park:
         return best
 
     def nearest_npc(self, px: float, pz: float) -> NpcBuilding | None:
-        """The QUEST-STOP NPC building within REACH of (px,pz), nearest first.
-        Plain flavor shops (task=None) are ignored — they have nothing to do."""
+        """The INTERACTIVE NPC building within REACH of (px,pz), nearest first —
+        a quest stop or a storefront. Plain flavor shops are ignored."""
         best, best_d = None, REACH
         for n in self.npc:
-            if not n.is_quest_stop:
+            if not n.interactive:
                 continue
             ld = self._models.get(n.model)
             hw, hd = TARGET_W / 2.0, (ld.half_d if ld else 2.5)
@@ -537,6 +604,7 @@ class Park:
         done = quest_done or set()
         pr.begin_mode_3d(camera)
         self._draw_streets(cx, cz)
+        self._draw_parks(cx, cz, season)        # lawns sit under the trees/fountains
         self._draw_cars(cx, cz)
         self._draw_props(cx, cz)
         self._draw_city(cx, cz)
@@ -740,6 +808,28 @@ class Park:
                 s = sld.scale * (SIGN_W / TARGET_W)
                 pr.draw_model_ex(sld.model, pr.Vector3(n.x, 2.2, front + 0.2),
                                  pr.Vector3(0, 1, 0), 0.0, pr.Vector3(s, s, s), pr.WHITE)
+
+    def _draw_parks(self, cx: float, cz: float, season: str) -> None:
+        """Each city park: a square lawn (recoloured by season), a crushed-stone path
+        cross, and a small central fountain. Trees are planted via the shared tree
+        list (see _build_city), so they're drawn — and culled — by _draw_trees."""
+        cull = CULL_DIST * CULL_DIST
+        grass = _c(PARK_GRASS.get(season, PARK_GRASS["Summer"]))
+        path = _c(PARK_PATH)
+        kerb = _c(PARK_KERB)
+        water = _c(PARK_WATER.get(season, PARK_WATER["Summer"]))
+        h = PARK_HALF
+        for p in self.parks:
+            if (p.x - cx) ** 2 + (p.z - cz) ** 2 > cull:
+                continue
+            # lawn, then a path cross laid just above it (avoid z-fighting with +y)
+            pr.draw_plane(pr.Vector3(p.x, 0.04, p.z), pr.Vector2(h * 2, h * 2), grass)
+            pr.draw_plane(pr.Vector3(p.x, 0.06, p.z), pr.Vector2(h * 2, 1.6), path)
+            pr.draw_plane(pr.Vector3(p.x, 0.06, p.z), pr.Vector2(1.6, h * 2), path)
+            # central fountain: stone basin, a thin water disc, a low spout pillar
+            pr.draw_cylinder(pr.Vector3(p.x, 0.0, p.z), 1.15, 1.15, 0.45, 18, kerb)
+            pr.draw_cylinder(pr.Vector3(p.x, 0.30, p.z), 0.95, 0.95, 0.22, 18, water)
+            pr.draw_cylinder(pr.Vector3(p.x, 0.45, p.z), 0.16, 0.16, 0.75, 10, kerb)
 
     def _draw_trees(self, cx: float, cz: float, season: str) -> None:
         cull = CULL_DIST * CULL_DIST

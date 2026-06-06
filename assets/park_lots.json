@@ -26,6 +26,8 @@
     { "id": "incubator",  "name": "Startup Incubator",   "model": "3Story_Balcony.glb", "sign": null, "x": 0,   "z": -8,  "awning": [90, 200, 210],  "blurb": "At the Incubator you mapped your business model canvas.",
       "tasks": ["value_prop", "channels", "relationships", "key_resources", "key_activities", "partnerships", "cost_structure"] },
     { "id": "ventures",   "name": "Apex Ventures",       "model": "6Story_Stack.glb",   "sign": null, "x": -12, "z": 4,   "awning": [60, 90, 140],   "task": "raise_round", "blurb": "Apex Ventures - bring a complete pitch and walk out with a check." },
+    { "id": "outfitters", "name": "The Outfitters",      "model": "2Story_Balcony.glb", "sign": null, "x": 12,  "z": 4,   "awning": [180, 120, 200], "store": "outfit", "blurb": "The Outfitters - change your look and pick up a sharp new suit." },
+    { "id": "staffing",   "name": "TalentWorks Staffing","model": "3Story_Slim.glb",    "sign": null, "x": 8,   "z": 8,   "awning": [70, 140, 190],  "store": "hire",   "blurb": "TalentWorks - browse AI talent and bring someone on board." },
 
     { "id": "casino",     "name": "Lucky's Casino",    "model": "4Story.glb",            "sign": "signs/CasinoSign.glb",     "x": 16,  "z": -10, "awning": [200, 60, 80] },
     { "id": "bakery",     "name": "Corner Bakery",     "model": "1Story.glb",            "sign": "signs/Sign_Bakery.glb",    "x": -16, "z": 6,   "awning": [210, 170, 120] },
@@ -37,5 +39,17 @@
     { "id": "grocery",     "name": "Fresh Market",     "model": "2Story_Wide_2Doors.glb","sign": null, "x": -8, "z": 12, "awning": [70, 160, 90] },
     { "id": "convenience", "name": "24/7 Mart",        "model": "1Story_Sign.glb",       "sign": null, "x": 8,  "z": 12, "awning": [220, 150, 60] },
     { "id": "cafe",        "name": "Bean Scene Cafe",  "model": "1Story_RoundRoof.glb",  "sign": null, "x": 0,  "z": -15, "awning": [150, 100, 70], "task": "cofounder", "reward": 2000, "blurb": "You bought Robin a coffee and laid it all out. They're in — your first believer, and your co-founder." }
+  ],
+
+  "_parks_comment": "City parks: named green spaces that replace a backdrop building at their grid address (avenue, street). Decorative only — grass + scattered seasonal trees + a central fountain + a floating name label. Walkable (no collision), no interaction.",
+  "parks": [
+    { "id": "founders_green", "name": "Founders Green", "ave": 8,  "st": 6  },
+    { "id": "maple_commons",  "name": "Maple Commons",  "ave": 12, "st": 6  },
+    { "id": "riverside_park", "name": "Riverside Park", "ave": 6,  "st": 8  },
+    { "id": "liberty_square", "name": "Liberty Square", "ave": 14, "st": 9  },
+    { "id": "cedar_grove",    "name": "Cedar Grove",    "ave": 8,  "st": 13 },
+    { "id": "sunset_gardens", "name": "Sunset Gardens", "ave": 12, "st": 14 },
+    { "id": "willow_park",    "name": "Willow Park",    "ave": 10, "st": 13 },
+    { "id": "unicorn_meadow", "name": "Unicorn Meadow", "ave": 15, "st": 11 }
   ]
 }

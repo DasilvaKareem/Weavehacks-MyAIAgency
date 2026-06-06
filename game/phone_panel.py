@@ -24,6 +24,11 @@ from backend.config import GEMINI_MODEL  # noqa: F401  (kept for parity / future
 # Screens (a tiny state machine).
 HOME, COFOUNDER, CONTACTS, AGENT, CALL = "home", "cofounder", "contacts", "agent", "call"
 INBOX, MESSAGE, TODO = "inbox", "message", "todo"
+HIRE, HIRE_ROLE = "hire", "hire_role"        # the Upwork-style hiring app
+
+# Catalog category → short tab label for the Hire app.
+_HIRE_TABS = {"office": "Office", "warriors": "Warriors", "fantasy": "Fantasy",
+              "critters": "Critters"}
 
 # Phone body geometry (centred on screen each frame).
 PW, PH = 312, 600
@@ -53,12 +58,19 @@ def _short(text: str, n: int = 40) -> str:
 
 
 class PhonePanel:
-    def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None) -> None:
+    def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None,
+                 hire=None) -> None:
         self.link = link                  # CompanyLink (agent 1:1 chat)
         self.coord = coordinator          # CoordinatorLink (co-founder)
         self._contacts = contacts_getter  # () -> list[Character]
         self.inbox = inbox                # Inbox: messages that come TO the CEO
         self.board = taskboard            # tasks.TaskBoard (the To-Do app), optional
+        self.hire = hire                  # hire bridge (catalog/cash/unlock/hire), optional
+        self._hire_tabs: list[str] = []   # catalog categories, lazily filled
+        self._hire_tab = 0                # current category tab in the Hire app
+        self._hire_item = None            # catalog model picked, awaiting a role choice
+        self._hire_flash = ""             # transient "Office full" / "Hired!" message
+        self._home_msg = ""               # transient note on the home screen (locked feature)
         self.open = False
         self.screen = HOME
         self.sel = 0                      # cursor in menus / contact / inbox list
@@ -71,6 +83,7 @@ class PhonePanel:
         # Co-founder thread (kept in memory; each line is (kind, text)).
         self._cf_log: list[tuple[str, str]] = []
         self._cf_waiting = False
+        self._cf_voice = voice.pick_voice(COFOUNDER_NAME)   # Robin reads replies aloud too
 
         # Agent 1:1 thread streaming state (mirrors ChatPanel).
         self._waiting = False
@@ -78,6 +91,11 @@ class PhonePanel:
         self._step = ""
         self._wait_start = 0.0
         self._voice_name = None
+
+        # Push-to-talk: hold R2 / Left-Ctrl to speak to the agent or co-founder
+        # (mic → Gemini transcription → sent as your message). No-op without a mic.
+        self.voice_in = voice.VoiceInput(GEMINI_MODEL)
+        self._voice_status = ""
 
         # Call screen state.
         self._call_t0 = 0.0
@@ -93,8 +111,45 @@ class PhonePanel:
         while pr.get_char_pressed() > 0:   # swallow the key that opened us
             pass
 
+    def open_hire(self) -> None:
+        """Open straight to the Hire app (used by the staffing-agency building)."""
+        self.open_panel()
+        self.screen, self.sel, self._list_top = HIRE, 0, 0
+        self._hire_tab, self._hire_item, self._hire_flash = 0, None, ""
+
+    # --- hire-app data helpers --------------------------------------------
+
+    def _hire_cats(self) -> list[str]:
+        """Catalog categories, in first-seen order (drives the Hire app tabs)."""
+        if not self._hire_tabs and self.hire is not None:
+            seen: list[str] = []
+            for it in self.hire.catalog():
+                c = it.get("category", "office")
+                if c not in seen:
+                    seen.append(c)
+            self._hire_tabs = seen
+        return self._hire_tabs
+
+    def _hire_rows(self) -> list[dict]:
+        """Catalog items in the current tab's category."""
+        cats = self._hire_cats()
+        if not cats:
+            return []
+        cat = cats[self._hire_tab % len(cats)]
+        return [it for it in self.hire.catalog() if it.get("category", "office") == cat]
+
+    def _hire_locked(self, it: dict) -> bool:
+        return bool(it.get("locked")) and it["id"] not in self.hire.unlocked()
+
+    def _cofounder_ready(self) -> bool:
+        """Robin is only your co-founder once you've won them over (the cofounder
+        to-do, done at the Bean Scene Cafe). Until then the phone won't text them."""
+        return self.board is not None and self.board.is_done("cofounder")
+
     def close(self) -> None:
         voice.stop_speaking()
+        self.voice_in.cancel()
+        self._voice_status = ""
         self.open = False
         self.agent = None
         self.input = ""
@@ -163,6 +218,10 @@ class PhonePanel:
 
         if self.screen == HOME:
             self._update_home()
+        elif self.screen == HIRE:
+            self._update_hire()
+        elif self.screen == HIRE_ROLE:
+            self._update_hire_role()
         elif self.screen == TODO:
             self._update_todo()
         elif self.screen == INBOX:
@@ -194,7 +253,7 @@ class PhonePanel:
         return pr.is_key_pressed(pr.KEY_ESCAPE) or gamepad.pressed(gamepad.CIRCLE)
 
     def _update_home(self) -> None:
-        items = 5
+        items = 6
         self._nav(items)
         # Mouse: click a row to pick it.
         ys, rh, lx, lw = self._rows(items)
@@ -211,13 +270,21 @@ class PhonePanel:
             self.close()
 
     def _activate_home(self) -> None:
+        self._home_msg = ""
         if self.sel == 0:
             self.screen, self.sel, self._scroll, self._list_top = INBOX, 0, 0, 0
         elif self.sel == 1:
+            if not self._cofounder_ready():      # Robin hasn't agreed to join yet
+                self._home_msg = (f"You haven't won {COFOUNDER_NAME} over yet — "
+                                  "pitch them at the Bean Scene Cafe.")
+                return
             self.screen, self._scroll, self.input = COFOUNDER, 0, ""
         elif self.sel == 2:
             self.screen, self.sel, self._scroll, self._list_top = CONTACTS, 0, 0, 0
         elif self.sel == 3:
+            self.screen, self.sel, self._list_top = HIRE, 0, 0
+            self._hire_tab, self._hire_item, self._hire_flash = 0, None, ""
+        elif self.sel == 4:
             self.screen, self.sel, self._list_top = TODO, 0, 0
         else:
             self.close()
@@ -245,7 +312,63 @@ class PhonePanel:
         n = len(tasks.TASKS)
         self._nav(n)
         if self._back():
+            self.screen, self.sel = HOME, 4
+
+    # --- Hire app (browse models → pick a role → hire) --------------------
+
+    def _update_hire(self) -> None:
+        if self.hire is None or self._back():
             self.screen, self.sel = HOME, 3
+            return
+        cats = self._hire_cats()
+        if cats:                                   # Left/Right switch category tabs
+            if pr.is_key_pressed(pr.KEY_LEFT) or gamepad.pressed(gamepad.DPAD_LEFT):
+                self._hire_tab = (self._hire_tab - 1) % len(cats)
+                self.sel, self._list_top, self._hire_flash = 0, 0, ""
+            if pr.is_key_pressed(pr.KEY_RIGHT) or gamepad.pressed(gamepad.DPAD_RIGHT):
+                self._hire_tab = (self._hire_tab + 1) % len(cats)
+                self.sel, self._list_top, self._hire_flash = 0, 0, ""
+        rows = self._hire_rows()
+        n = len(rows)
+        self._nav(n)
+        if n and self._enter():
+            self.sel = min(self.sel, n - 1)
+            self._pick_hire(rows[self.sel])
+
+    def _pick_hire(self, it: dict) -> None:
+        """Enter on a catalog row: buy it if locked, else go choose a role."""
+        if self._hire_locked(it):
+            if self.hire.cash() < it.get("unlock", 0):
+                self._hire_flash = "Can't afford unlock"
+            elif self.hire.unlock(it):
+                self._hire_flash = f"Unlocked {_short(it['name'], 16)}"
+            return
+        if not self.hire.can_hire():
+            self._hire_flash = "Office is full — lease more space"
+            return
+        if self.hire.cash() < it.get("price", 0):
+            self._hire_flash = "Not enough cash"
+            return
+        self._hire_item = it
+        self.screen, self.sel, self._list_top, self._hire_flash = HIRE_ROLE, 0, 0, ""
+
+    def _update_hire_role(self) -> None:
+        if self.hire is None or self._back():
+            self.screen, self.sel, self._list_top = HIRE, 0, 0
+            return
+        roles = self.hire.roles()
+        n = len(roles)
+        self._nav(n)
+        if n and self._enter():
+            self.sel = min(self.sel, n - 1)
+            role = roles[self.sel]
+            if self.hire.hire(self._hire_item, role):
+                name = _short(self._hire_item["name"], 14)
+                self._hire_item = None
+                self.screen, self.sel, self._list_top = HIRE, 0, 0
+                self._hire_flash = f"Hired a {_short(role, 18)}"
+            else:
+                self._hire_flash = "Hire failed (full / broke)"
 
     def _open_message(self, msg) -> None:
         self.inbox.mark_read(msg)
@@ -297,7 +420,9 @@ class PhonePanel:
 
     def _update_thread(self, *, is_cofounder: bool) -> None:
         if self._back():
+            self.voice_in.cancel()
             voice.stop_speaking()
+            self._voice_status = ""
             self.screen = HOME if is_cofounder else CONTACTS
             return
 
@@ -305,6 +430,8 @@ class PhonePanel:
         if not is_cofounder:
             self._pump_agent()             # poll streaming reply for the agent
             waiting = self._waiting
+
+        self._update_voice_thread(is_cofounder, waiting)   # push-to-talk (hold R2 / Ctrl)
 
         if not waiting:                    # typing only when not mid-reply
             ch = pr.get_char_pressed()
@@ -323,6 +450,31 @@ class PhonePanel:
                 self._cf_send(self.input)
             else:
                 self._agent_send(self.input)
+
+    def _update_voice_thread(self, is_cofounder: bool, waiting: bool) -> None:
+        """Hold R2 / Left-Ctrl to record; release to transcribe and auto-send — so
+        you can talk to the agent/co-founder instead of typing (great on a pad)."""
+        held = (gamepad.down(gamepad.R2) or pr.is_key_down(pr.KEY_LEFT_CONTROL)
+                or pr.is_key_down(pr.KEY_RIGHT_CONTROL))
+        if held and not waiting and not self.voice_in.recording and not self.voice_in.transcribing:
+            self.voice_in.begin()
+            if self.voice_in.recording:
+                self._voice_status = "listening…"
+        elif self.voice_in.recording and (not held or waiting):
+            self.voice_in.end()
+            self._voice_status = "transcribing…" if self.voice_in.transcribing else ""
+
+        result = self.voice_in.poll()
+        if result is None:
+            return
+        self._voice_status = ""
+        if result.startswith("[voice error"):
+            self._voice_status = result
+        elif result.strip() and not waiting:
+            if is_cofounder:
+                self._cf_send(result)
+            else:
+                self._agent_send(result)
 
     def _cf_send(self, text: str) -> None:
         text = text.strip()
@@ -353,9 +505,24 @@ class PhonePanel:
             kind = "sys" if reply.startswith("[error") else "cf"
             self._cf_log.append((kind, reply))
             self._scroll = 0
+            if kind == "cf":                       # Robin replies aloud, like the agents
+                voice.speak(reply, self._cf_voice)
 
     def _agent_send(self, text: str) -> None:
-        if self.link.send(self.agent.backend_id, text.strip()):
+        text = text.strip()
+        # Texting a Recruiter/HR "hire an engineer" hires for you right here, instead
+        # of going to the model — the same bridge the office chat uses.
+        if (self.hire is not None and self.agent is not None
+                and self.hire.is_hr(self.agent.role)):
+            ack = self.hire.hire_by_text(text)
+            if ack is not None:
+                if self.agent.backend_id:
+                    self.link.store.add_message(self.agent.backend_id, "human", text)
+                    self.link.store.add_message(self.agent.backend_id, "ai", ack)
+                self.input, self._scroll = "", 0
+                voice.speak(ack, self._voice_name)
+                return
+        if self.link.send(self.agent.backend_id, text):
             self.input, self._scroll = "", 0
             self._partial, self._step = "", ""
             self._waiting = True
@@ -413,6 +580,10 @@ class PhonePanel:
         pr.begin_scissor_mode(lx, ly, lw, lh)
         if self.screen == HOME:
             self._draw_home(lx, ly, lw, lh)
+        elif self.screen == HIRE:
+            self._draw_hire(lx, ly, lw, lh)
+        elif self.screen == HIRE_ROLE:
+            self._draw_hire_role(lx, ly, lw, lh)
         elif self.screen == TODO:
             self._draw_todo(lx, ly, lw, lh)
         elif self.screen == INBOX:
@@ -482,14 +653,25 @@ class PhonePanel:
         if self.board is not None:
             d, t = self.board.progress()
             todo_hint = f"{d}/{t} done"
+        hire_hint = ""
+        if self.hire is not None:
+            hire_hint = "browse talent" if self.hire.can_hire() else "office full"
+        # Robin isn't your co-founder until you win them over — say so until then.
+        cf_hint = f"text {COFOUNDER_NAME}" if self._cofounder_ready() else f"win {COFOUNDER_NAME} over first"
         items = [("Inbox", f"{unread} new" if unread else "no new messages"),
-                 ("New Message", f"text {COFOUNDER_NAME}"),
+                 ("New Message", cf_hint),
                  ("Contacts", "message / call an agent"),
+                 ("Hire", hire_hint),
                  ("To-Do", todo_hint),
                  ("Close", "")]
         ys, rh, _, _ = self._rows(len(items))
         for i, (label, hint) in enumerate(items):
             self._draw_row(lx, ys[i], lw, rh, label, hint, i == self.sel)
+        if self._home_msg:                       # locked-feature nudge, wrapped
+            my = ys[-1] + rh + 6
+            for line in _wrap(self._home_msg, lw - 12, 13)[:3]:
+                pr.draw_text(line, lx + 6, my, 13, INK_DIM)
+                my += 16
 
     def _draw_inbox(self, lx, ly, lw, lh) -> None:
         msgs = self.inbox.messages()
@@ -577,6 +759,80 @@ class PhonePanel:
                 title = title[:-1]
             pr.draw_text(title, lx + 34, ry, 14, fg)
 
+    def _draw_hire(self, lx, ly, lw, lh) -> None:
+        if self.hire is None:
+            self._draw_status_strip(lx, ly, lw, "Hire")
+            pr.draw_text("Hiring unavailable.", lx + 8, ly + 30, FONT, INK_DIM)
+            return
+        cats = self._hire_cats()
+        cat = cats[self._hire_tab % len(cats)] if cats else "office"
+        label = _HIRE_TABS.get(cat, cat.title())
+        self._draw_status_strip(lx, ly, lw, f"Hire ‹{label}›")
+        rows = self._hire_rows()
+        if not rows:
+            pr.draw_text("Nobody available.", lx + 8, ly + 30, FONT, INK_DIM)
+            return
+        # leave a line at the bottom for the flash / tab hint
+        foot = self._hire_flash or "◄ ► category"
+        pr.draw_text(_short(foot, 30), lx + 6, ly + lh - 16, 12, INK_DIM)
+        start, ys, rh, _, _ = self._list_view_h(len(rows), bottom_pad=20)
+        for i, ry in enumerate(ys):
+            it = rows[start + i]
+            selected = (start + i) == self.sel
+            locked = self._hire_locked(it)
+            if selected:
+                pr.draw_rectangle(lx + 2, ry - 2, lw - 4, rh, HILITE)
+            fg = LCD_BG if selected else INK
+            dim = LCD_BG if selected else INK_DIM
+            nx = lx + 8
+            if locked:                              # padlock glyph before the name
+                pr.draw_rectangle(nx, int(ry) + 6, 9, 7, fg)
+                pr.draw_ring(pr.Vector2(nx + 4, int(ry) + 6), 2, 4, 180, 360, 12, fg)
+                nx += 14
+            name = it["name"]
+            while name and pr.measure_text(name, 14) > lw - 80:
+                name = name[:-1]
+            pr.draw_text(name, nx, ry, 14, fg)
+            cost = it.get("unlock", 0) if locked else it.get("price", 0)
+            tag = f"${cost:,}"
+            tw = pr.measure_text(tag, 12)
+            pr.draw_text(tag, lx + lw - tw - 8, ry + 1, 12, dim)
+
+    def _draw_hire_role(self, lx, ly, lw, lh) -> None:
+        item = self._hire_item
+        who = _short(item["name"], 18) if item else "—"
+        self._draw_status_strip(lx, ly, lw, "Pick a role")
+        pr.draw_text(f"Hire {who} as:", lx + 8, ly + 24, 13, INK_DIM)
+        roles = self.hire.roles() if self.hire else []
+        if self._hire_flash:
+            pr.draw_text(_short(self._hire_flash, 30), lx + 6, ly + lh - 16, 12, INK_DIM)
+        start, ys, rh, _, _ = self._list_view_h(len(roles), top=ly + 44, bottom_pad=20)
+        for i, ry in enumerate(ys):
+            role = roles[start + i]
+            selected = (start + i) == self.sel
+            if selected:
+                pr.draw_rectangle(lx + 2, ry - 2, lw - 4, rh, HILITE)
+            fg = LCD_BG if selected else INK
+            r = role
+            while r and pr.measure_text(r, 14) > lw - 20:
+                r = r[:-1]
+            pr.draw_text(r, lx + 8, ry, 14, fg)
+
+    def _list_view_h(self, n: int, top: int | None = None, bottom_pad: int = 0):
+        """Like _list_view but lets the Hire screens reserve a top header and a
+        bottom footer line. Returns (start, ys, rh, lx, lw)."""
+        _, _, lx, ly, lw, lh = self._geom()
+        top = (ly + 26) if top is None else top
+        rh = LINE_H + 4
+        visible = max(1, (ly + lh - 4 - bottom_pad - top) // rh)
+        if self.sel < self._list_top:
+            self._list_top = self.sel
+        elif self.sel >= self._list_top + visible:
+            self._list_top = self.sel - visible + 1
+        self._list_top = max(0, min(self._list_top, max(0, n - visible)))
+        ys = [top + i * rh for i in range(min(visible, n - self._list_top))]
+        return self._list_top, ys, rh, lx, lw
+
     def _draw_row(self, lx, y, lw, rh, label, hint, selected) -> None:
         if selected:
             pr.draw_rectangle(lx + 2, y - 2, lw - 4, rh, HILITE)
@@ -634,11 +890,18 @@ class PhonePanel:
         # Input line at the bottom of the LCD.
         pr.draw_line(lx, input_y - 4, lx + lw, input_y - 4, INK_DIM)
         waiting = self._cf_waiting if is_cofounder else self._waiting
-        if waiting:
+        if self.voice_in.recording or self.voice_in.transcribing or self._voice_status:
+            label = self._voice_status or "listening…"
+            mark = "●" if self.voice_in.recording else "…"
+            pr.draw_text(f"{mark} {label}", lx + 7, input_y, FONT,
+                         pr.Color(150, 40, 30, 255) if self.voice_in.recording else INK_DIM)
+        elif waiting:
             pr.draw_text("…sending, you can step away", lx + 7, input_y, 12, INK_DIM)
         else:
             caret = "_" if (pr.get_time() % 1.0) < 0.5 else " "
-            pr.draw_text("> " + self.input + caret, lx + 7, input_y, FONT, INK)
+            hint = "> " + self.input + caret if self.input else "> type, or hold Ctrl/R2 to talk"
+            col = INK if self.input else INK_DIM
+            pr.draw_text(hint, lx + 7, input_y, FONT, col)
 
     def _draw_call(self, lx, ly, lw, lh) -> None:
         self._draw_status_strip(lx, ly, lw, "Call")
@@ -672,6 +935,12 @@ class PhonePanel:
             left, right = "Message", "Back"
         elif self.screen == TODO:
             left, right = "", "Back"
+        elif self.screen == HIRE:
+            left, right = ("Unlock" if (self._hire_rows() and
+                           self._hire_locked(self._hire_rows()[min(self.sel, len(self._hire_rows()) - 1)]))
+                           else "Pick"), "Back"
+        elif self.screen == HIRE_ROLE:
+            left, right = "Hire", "Back"
         elif self.screen == CALL:
             left, right = "", "End"
         else:

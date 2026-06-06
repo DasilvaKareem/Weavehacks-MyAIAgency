@@ -35,7 +35,8 @@ class OnboardingScreen:
         self.suit_idx = 0
         self.eye_idx = 0              # eye color (the "Face" material)
         self._pending_unlock = None   # suit idx awaiting an unlock-confirm popup
-        self.first_run = True         # first launch (vs re-editing via Settings)
+        self.first_run = True         # first launch (vs re-editing later)
+        self.store_mode = False       # opened as The Outfitters wardrobe shop
         self._spin = 0.0              # preview turntable angle (degrees)
         # Live preview character (positioned at the origin, spun in place).
         self._preview = Character(name="", role="CEO", x=0.0, z=0.0,
@@ -59,6 +60,7 @@ class OnboardingScreen:
         """Pre-fill the editor from an existing profile (used by the Settings
         button to re-edit the CEO). A default/blank name shows the placeholder."""
         self.first_run = not profile          # re-edit when given an existing profile
+        self.store_mode = False               # caller flips this on for the shop
         profile = profile or {}
         name = profile.get("name") or ""
         self.name = "" if name == "You (CEO)" else name
@@ -232,15 +234,28 @@ class OnboardingScreen:
         # Blit the preview (render textures are y-flipped → negative source height).
         pr.draw_texture_rec(self._rt.texture, pr.Rectangle(0, 0, pw, -sh),
                             pr.Vector2(0, 0), pr.WHITE)
-        sub = "Step 1 of 1 — meet your founder"
+        if self.store_mode:
+            sub = "The Outfitters — try it on, then strut out"
+        elif self.first_run:
+            sub = "Step 1 of 1 — meet your founder"
+        else:
+            sub = "Edit your founder"
         pr.draw_text(sub, 28, sh - 44, 18, pr.Color(150, 165, 190, 255))
 
         # --- right: controls -----------------------------------------------
         cx = pw + 44
         label_col = pr.Color(150, 165, 190, 255)
-        pr.draw_text("Create your CEO", cx, 36, 34, pr.RAYWHITE)
-        pr.draw_text("This is you. Make them yours, then step into the park.",
-                     cx, 76, 16, label_col)
+        if self.store_mode:
+            header = "The Outfitters"
+            blurb = "Change your look. Premium suits are yours to buy and keep."
+        elif self.first_run:
+            header = "Create your CEO"
+            blurb = "This is you. Make them yours, then step into the park."
+        else:
+            header = "Edit your CEO"
+            blurb = "Touch up your founder, then get back to building."
+        pr.draw_text(header, cx, 36, 34, pr.RAYWHITE)
+        pr.draw_text(blurb, cx, 76, 16, label_col)
 
         # Name
         pr.draw_text("NAME", cx, 116, 15, label_col)
@@ -278,11 +293,16 @@ class OnboardingScreen:
         pr.draw_text("EYES", cx, 470, 15, label_col)
         self.eye_idx = self._swatch_row(cx, 488, config.EYE_COLORS, self.eye_idx, mouse)
 
-        pr.draw_text("SUIT", cx, 546, 15, label_col)
+        pr.draw_text("OUTFIT" if self.store_mode else "SUIT", cx, 546, 15, label_col)
         self.suit_idx = self._suit_row(cx, 564, self.suit_idx, mouse, unlocked)
 
-        # Confirm (+ Cancel when re-editing from Settings)
-        confirm_label = "Enter the Park" if self.first_run else "Save"
+        # Confirm (+ Cancel when re-editing / shopping)
+        if self.first_run:
+            confirm_label = "Enter the Park"
+        elif self.store_mode:
+            confirm_label = "Save & Wear"
+        else:
+            confirm_label = "Save"
         start = pr.Rectangle(cx, 628, 320, 56)
         go = _panel_button(start, confirm_label, pr.Color(45, 140, 80, 255), mouse)
         cancel = False

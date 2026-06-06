@@ -46,6 +46,10 @@ class Scene:
         self._floor = (plan.cols * config.TILE, plan.rows * config.TILE)
         self._furniture = furniture.generate_layout(
             plan.furniture_seed if seed is None else seed, plan.cols, plan.rows)
+        # The Company Records cabinet: a fixed, interactive filing cabinet against
+        # the left wall (walk up + E opens the Company Dossier). Same in every room.
+        w, d = self._floor
+        self._records_pos = (-w / 2 + 0.5, -d * 0.05)
 
     def set_floor_color(self, rgb) -> None:
         self.floor_color = _color(rgb)
@@ -90,6 +94,7 @@ class Scene:
         self._draw_meeting_area()
         self._draw_lounges()
         self._draw_fixtures(d)
+        self._draw_records_cabinet(*self._records_pos)
 
     def _draw_door(self, w: float, d: float, wall_h: float) -> None:
         """A door set into the back wall (slightly proud of it), with a frame and
@@ -145,6 +150,29 @@ class Scene:
         for ox in (-0.39, 0.39):
             pr.draw_cube(pr.Vector3(x + ox, 1.08, bz + 0.08), 0.72, 2.04, 0.05, metal)
         pr.draw_cube(pr.Vector3(x, 2.42, bz), 1.2, 0.22, 0.08, pr.Color(90, 150, 230, 255))  # call light
+
+    def _draw_records_cabinet(self, x: float, z: float) -> None:
+        """The Company Records cabinet — a tall, distinct navy filing cabinet with a
+        gold top and a labelled folder tab, so it reads as the 'open the dossier'
+        spot rather than ambient decor. Drawers face +z (into the room)."""
+        body = pr.Color(48, 70, 120, 255)
+        gold = pr.Color(210, 175, 90, 255)
+        dh, n = 0.40, 4
+        for i in range(n):
+            cy = dh / 2 + i * dh
+            pr.draw_cube(pr.Vector3(x, cy, z), 0.84, dh - 0.03, 0.62, body)
+            pr.draw_cube_wires(pr.Vector3(x, cy, z), 0.84, dh - 0.03, 0.62, pr.Color(0, 0, 0, 90))
+            pr.draw_cube(pr.Vector3(x, cy, z + 0.32), 0.26, 0.05, 0.03, gold)   # handle
+        top = n * dh
+        pr.draw_cube(pr.Vector3(x, top + 0.02, z), 0.9, 0.06, 0.68, gold)        # lid
+        # A standing folder/placard on top so it's identifiable from across the room.
+        pr.draw_cube(pr.Vector3(x, top + 0.27, z - 0.05), 0.5, 0.36, 0.04,
+                     pr.Color(235, 226, 200, 255))
+        pr.draw_cube(pr.Vector3(x, top + 0.42, z - 0.07), 0.22, 0.1, 0.04, gold)  # folder tab
+
+    def records_pos(self) -> tuple[float, float]:
+        """World (x, z) of the Company Records cabinet (for the walk-up prompt)."""
+        return self._records_pos
 
     def _draw_lounges(self) -> None:
         """A rug + couch at every lounge zone in the active plan (where bots sit

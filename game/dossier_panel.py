@@ -91,7 +91,7 @@ class DossierPanel:
         pr.draw_rectangle_lines_ex(pr.Rectangle(x, y, w, h), 2, _ACCENT)
         pr.draw_rectangle(x, y, w, 4, _ACCENT)
 
-        pr.draw_text("COMPANY DOSSIER", x + _PAD, y + 18, 26, pr.RAYWHITE)
+        pr.draw_text("COMPANY FILES", x + _PAD, y + 18, 26, pr.RAYWHITE)
         filled = sum(1 for k, _, _ in FIELDS if company.get(k))
         sub = f"{filled} of {len(FIELDS)} decided  ·  your agents read every line"
         pr.draw_text(sub, x + _PAD, y + 52, 15, _HEAD)
