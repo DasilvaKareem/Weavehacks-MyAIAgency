@@ -71,6 +71,8 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "citybank": (13, 11),
             # The Startup Incubator hosts the Business Model Canvas workshop.
             "incubator": (10, 7),
+            # Apex Ventures (the VC firm) on its own downtown block in the cluster.
+            "ventures": (12, 9),
             # Storefronts: The Outfitters by the brand studio; staffing up north.
             "outfitters": (7, 9), "staffing": (11, 7)}
 
@@ -178,10 +180,16 @@ class GreenSpace:
     z: float
 
 
-# City-park look. The plot fills most of a block (16 wide); season recolours the
-# lawn the way SEASON_SUFFIX recolours the trees, so a park greens/browns/snows in
-# step with the rest of the world.
-PARK_HALF = 6.6        # half-size of the square lawn (a touch under the block pitch)
+# Offset from a building centre onto its sidewalk for street trees: the band runs
+# from the footprint half (~2.75) to the road's inner edge (~4.65), so ~3.7 sits
+# mid-sidewalk, clear of both the wall and the asphalt.
+SIDEWALK_OFF = 3.7
+
+# City-park look. The lawn must fit WITHIN its block: the surrounding roads run at
+# ±8 from the centre with an inner edge ~4.65 in, so a half of ~4.3 keeps the lawn
+# (and its grove) on the lot, off the asphalt, with a thin sidewalk margin. Season
+# recolours the lawn the way SEASON_SUFFIX recolours trees (green/brown/snow).
+PARK_HALF = 4.3        # half-size of the square lawn (fits the block, clear of roads)
 PARK_GRASS = {"Summer": (104, 156, 84), "Autumn": (158, 142, 80),
               "Winter": (226, 230, 236), "Dead": (132, 118, 90)}
 PARK_PATH = (190, 184, 168)        # crushed-stone path crossing the lawn
@@ -477,15 +485,25 @@ class Park:
                 city.append((rng.choice(SCENERY_MODELS), x, z, yaw,
                              rng.uniform(0.92, 1.1), vboost))
 
-        # A few street trees per corner near downtown. Each gets a fixed family +
-        # variant + orientation so it stays the *same* tree as the season swaps
-        # only its foliage model (summer -> autumn -> snow).
+        # Street trees line the SIDEWALKS, not the road. Roads run down the half-
+        # address lines between blocks, so block_pos(a+0.5, s+0.5) is the middle of
+        # an intersection — exactly where trees must NOT go. Instead offset from a
+        # building centre toward one of its corners by SIDEWALK_OFF, landing in the
+        # concrete band between the footprint (±2.75) and the road's inner edge
+        # (~4.65). Each gets a fixed family/variant/orientation so it stays the same
+        # tree as the season swaps only its foliage (summer -> autumn -> snow).
         trees = []    # (x, z, family, variant, yaw, scale_mul)
         for a in range(6, 15):
             for s in range(6, 15):
-                if rng.random() < 0.25:
-                    x, z = block_pos(a + 0.5, s + 0.5)        # at the intersection corner
-                    trees.append((x, z, rng.choice(TREE_FAMILIES), rng.randint(1, 5),
+                if (a, s) in self._park_addrs:        # parks plant their own grove
+                    continue
+                if rng.random() < 0.5:
+                    bx, bz = block_pos(a, s)
+                    ox = rng.choice((-SIDEWALK_OFF, SIDEWALK_OFF))
+                    oz = rng.choice((-SIDEWALK_OFF, SIDEWALK_OFF))
+                    jx, jz = rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3)
+                    trees.append((bx + ox + jx, bz + oz + jz,
+                                  rng.choice(TREE_FAMILIES), rng.randint(1, 5),
                                   rng.uniform(0.0, 360.0), rng.uniform(0.8, 1.25)))
 
         # Plant a small grove around each park's edges (clear of the centre fountain

@@ -30,11 +30,14 @@ HIRE, HIRE_ROLE = "hire", "hire_role"        # the Upwork-style hiring app
 _HIRE_TABS = {"office": "Office", "warriors": "Warriors", "fantasy": "Fantasy",
               "critters": "Critters"}
 
-# Phone body geometry (centred on screen each frame).
+# Phone body geometry (centred on screen each frame). The whole phone is drawn at
+# this native size and then uniformly scaled up via a Camera2D so it fills a tall
+# fraction of the screen (it gets used a lot) — see _scale()/_camera().
 PW, PH = 312, 600
 LCD_MARGIN_X = 30
 LCD_TOP = 74
 LCD_H = 312
+SCREEN_FRAC = 0.92                 # target phone height as a fraction of screen height
 FONT = 16
 LINE_H = 19
 SPINNER = "|/-\\"
@@ -100,6 +103,10 @@ class PhonePanel:
         # Call screen state.
         self._call_t0 = 0.0
         self._call_live = False
+
+        # Clickable soft-key hit-boxes (set each frame by _draw_softkeys).
+        self._sk_left_rect = None
+        self._sk_right_rect = None
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -178,6 +185,24 @@ class PhonePanel:
         lw, lh = PW - 2 * LCD_MARGIN_X, LCD_H
         return bx, by, lx, ly, lw, lh
 
+    def _scale(self) -> float:
+        """Uniform zoom that makes the native PW×PH phone fill SCREEN_FRAC of the
+        screen height. Clamped so it never shrinks below native or grows absurdly."""
+        s = (pr.get_screen_height() * SCREEN_FRAC) / PH
+        return max(1.0, min(s, 3.0))
+
+    def _camera(self):
+        """Camera2D that scales the phone about the screen centre. Native (world)
+        coords are what _geom()/draw use; the camera maps them to scaled pixels."""
+        sw, sh = pr.get_screen_width(), pr.get_screen_height()
+        c = pr.Vector2(sw / 2, sh / 2)
+        return pr.Camera2D(c, c, 0.0, self._scale())
+
+    def _mouse(self):
+        """Mouse position in the phone's native coord space (inverse of _camera),
+        so hit-tests written in native coords line up with the scaled drawing."""
+        return pr.get_screen_to_world_2d(pr.get_mouse_position(), self._camera())
+
     def _rows(self, count: int):
         """y of each selectable row in a short (always-fits) list, and row height."""
         _, _, lx, ly, lw, lh = self._geom()
@@ -246,18 +271,26 @@ class PhonePanel:
         if pr.is_key_pressed(pr.KEY_DOWN) or gamepad.pressed(gamepad.DPAD_DOWN):
             self.sel = (self.sel + 1) % n
 
+    def _softkey_clicked(self, rect) -> bool:
+        """True if the left mouse button was pressed inside a soft-key label."""
+        return (rect is not None
+                and pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
+                and pr.check_collision_point_rec(self._mouse(), rect))
+
     def _enter(self) -> bool:
-        return pr.is_key_pressed(pr.KEY_ENTER) or gamepad.pressed(gamepad.CROSS)
+        return (pr.is_key_pressed(pr.KEY_ENTER) or gamepad.pressed(gamepad.CROSS)
+                or self._softkey_clicked(self._sk_left_rect))
 
     def _back(self) -> bool:
-        return pr.is_key_pressed(pr.KEY_ESCAPE) or gamepad.pressed(gamepad.CIRCLE)
+        return (pr.is_key_pressed(pr.KEY_ESCAPE) or gamepad.pressed(gamepad.CIRCLE)
+                or self._softkey_clicked(self._sk_right_rect))
 
     def _update_home(self) -> None:
         items = 6
         self._nav(items)
         # Mouse: click a row to pick it.
         ys, rh, lx, lw = self._rows(items)
-        m = pr.get_mouse_position()
+        m = self._mouse()
         clicked = pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
         for i, ry in enumerate(ys):
             if clicked and pr.check_collision_point_rec(m, pr.Rectangle(lx, ry, lw, rh)):
@@ -294,7 +327,7 @@ class PhonePanel:
         n = len(msgs)
         self._nav(n)
         start, ys, rh, lx, lw = self._list_view(n)
-        m = pr.get_mouse_position()
+        m = self._mouse()
         clicked = pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
         for i, ry in enumerate(ys):
             if clicked and pr.check_collision_point_rec(m, pr.Rectangle(lx, ry, lw, rh)):
@@ -381,7 +414,7 @@ class PhonePanel:
             return
         # Reply (only for agent messages we can route): left soft-key / R.
         m = self._msg
-        if m is not None and m.agent_id and pr.is_key_pressed(pr.KEY_R):
+        if m is not None and m.agent_id and (pr.is_key_pressed(pr.KEY_R) or self._enter()):
             for c in self._contacts():
                 if c.backend_id == m.agent_id:
                     self._open_agent(c)
@@ -392,7 +425,7 @@ class PhonePanel:
         n = len(people)
         self._nav(n)
         start, ys, rh, lx, lw = self._list_view(n)
-        m = pr.get_mouse_position()
+        m = self._mouse()
         clicked = pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
         for i, ry in enumerate(ys):
             if clicked and pr.check_collision_point_rec(m, pr.Rectangle(lx, ry, lw, rh)):
@@ -445,7 +478,8 @@ class PhonePanel:
             if bs and self.input:
                 self.input = self.input[:-1]
 
-        if pr.is_key_pressed(pr.KEY_ENTER) and self.input.strip() and not waiting:
+        send = pr.is_key_pressed(pr.KEY_ENTER) or self._softkey_clicked(self._sk_left_rect)
+        if send and self.input.strip() and not waiting:
             if is_cofounder:
                 self._cf_send(self.input)
             else:
@@ -571,13 +605,20 @@ class PhonePanel:
         if not self.open:
             return
         sw, sh = pr.get_screen_width(), pr.get_screen_height()
-        pr.draw_rectangle(0, 0, sw, sh, pr.Color(0, 0, 0, 150))
+        pr.draw_rectangle(0, 0, sw, sh, pr.Color(0, 0, 0, 150))   # dim backdrop (unscaled)
+
+        cam = self._camera()
+        s, cx, cy = cam.zoom, sw / 2, sh / 2
+        pr.begin_mode_2d(cam)
         bx, by, lx, ly, lw, lh = self._geom()
         self._draw_body(bx, by)
 
         pr.draw_rectangle(lx - 4, ly - 4, lw + 8, lh + 8, LCD_EDGE)
         pr.draw_rectangle(lx, ly, lw, lh, LCD_BG)
-        pr.begin_scissor_mode(lx, ly, lw, lh)
+        # Scissor clips in raw framebuffer pixels (Camera2D doesn't transform it), so
+        # map the LCD rect through the camera ourselves before clipping.
+        pr.begin_scissor_mode(int((lx - cx) * s + cx), int((ly - cy) * s + cy),
+                              int(lw * s), int(lh * s))
         if self.screen == HOME:
             self._draw_home(lx, ly, lw, lh)
         elif self.screen == HIRE:
@@ -599,6 +640,7 @@ class PhonePanel:
         pr.end_scissor_mode()
 
         self._draw_softkeys(bx, by, ly + lh)
+        pr.end_mode_2d()
 
     def _draw_body(self, bx: int, by: int) -> None:
         outer = pr.Rectangle(bx - 4, by - 4, PW + 8, PH + 8)
@@ -946,11 +988,18 @@ class PhonePanel:
         else:
             left, right = "Send", "Back"
         y = lcd_bottom + 6
+        pad = 8                                       # enlarge the click target a touch
+        self._sk_left_rect = self._sk_right_rect = None
         if left:
+            lw_ = pr.measure_text(left, 13)
             pr.draw_text(left, bx + LCD_MARGIN_X, y, 13, BRAND)
+            self._sk_left_rect = pr.Rectangle(bx + LCD_MARGIN_X - pad, y - pad,
+                                              lw_ + 2 * pad, 13 + 2 * pad)
         if right:
             rw = pr.measure_text(right, 13)
             pr.draw_text(right, bx + PW - LCD_MARGIN_X - rw, y, 13, BRAND)
+            self._sk_right_rect = pr.Rectangle(bx + PW - LCD_MARGIN_X - rw - pad, y - pad,
+                                               rw + 2 * pad, 13 + 2 * pad)
         center = ""                                 # extra key affordance, if any
         if self.screen == CONTACTS:
             center = "C = Call"

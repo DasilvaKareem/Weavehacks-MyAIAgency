@@ -22,7 +22,7 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, tasks
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, tasks, dialogue
 from game import park as parkmod
 from game.park import Park, load_lots as load_park
 from game.shop import ShopPanel, load_catalog
@@ -53,26 +53,8 @@ from game.behavior import BotBrain, BotContext, Director, default_policy, P_MEET
 # Distance (world units) within which the CEO can talk to an unselected agent.
 TALK_RANGE = 2.6
 
-# What the person at each quest-stop says before you fill out their form, so a
-# stop reads like a conversation, not a popup. Keyed by the to-do's task key.
-QUEST_LINES = {
-    "customer":       "Welcome in. Let's get you on the books - who exactly are you building this for?",
-    "competitors":    "Smart founders know the field. So tell me - who are you up against?",
-    "business_model": "Let's talk money. How does this thing actually turn a profit?",
-    "logo":           "We'll mock something up for you. What should your logo look like?",
-    "domain":         "Let's stake your claim online. What domain do you want?",
-    "brand":          "Time to look the part. Describe your brand for me - colors, vibe, all of it.",
-    "pricing":        "Let's not leave money on the table. How are you going to price this?",
-    "cofounder":      "(slides a coffee across the table)  Alright - pitch me. Why should I bet on you?",
-    # The Business Model Canvas workshop (Startup Incubator) — one block per line.
-    "value_prop":     "Let's start at the heart of the canvas. What's the core value you promise customers?",
-    "channels":       "Now - how do you actually reach and deliver to those customers?",
-    "relationships":  "How will you win, keep, and grow your customers over time?",
-    "key_resources":  "What are the key resources you can't run this business without?",
-    "key_activities": "What are the most important activities your company has to do well?",
-    "partnerships":   "No one builds alone. Who are the key partners you'll lean on?",
-    "cost_structure": "Last block: where does the money go? What are your biggest costs?",
-}
+# What characters say at each quest stop now lives in assets/dialogue.json (a beat
+# per task key, one or more lines), loaded into Game.dialogue. See game/dialogue.py.
 
 # Agent role pool (label + accent color used on name tags / fallback boxes)
 ROLES = [
@@ -129,12 +111,11 @@ class Game:
         self.pedestrians = Pedestrians()              # ambient sidewalk crowd (park)
         # Robin, your co-founder-to-be: stands a few steps ahead of the park spawn
         # with a "!" overhead, so your very first move is to walk up and pitch them
-        # (the coffee meeting). Built once here; (re)positioned and re-bound to its
-        # quest stop each time you enter the park (see _enter_park).
+        # (the coffee meeting). Built once here; reused as the actor inside the cafe
+        # quest building (see _spawn_quest_actor).
         self.robin = Character(name=COFOUNDER_NAME, role="Co-founder", x=0.0, z=0.0,
                                color=pr.Color(90, 210, 230, 255), dept="Founder",
                                model="Suit_Male.gltf", yaw=180.0)
-        self._robin_npc = None        # the cofounder quest stop, bound in _enter_park
         # The building whose interior is currently active (starts at HQ).
         self.current_building = next((b for b in self.park.buildings if b.status == "hq"),
                                      self.park.buildings[0] if self.park.buildings else None)
@@ -176,6 +157,7 @@ class Game:
         # The only place it's shown is the Nokia phone's To-Do screen (N → To-Do);
         # there's deliberately no on-screen panel or HUD chip for it.
         self.taskboard = tasks.TaskBoard(self.link.load_tasks())
+        self.dialogue = dialogue.load()    # NPC story-beat lines (assets/dialogue.json)
         self.dossier = DossierPanel()      # view/edit the company decisions agents read
         self.investor = InvestorPanel()    # pitch the VC for a funding round
         self.chat = ChatPanel(self.link)
@@ -248,6 +230,13 @@ class Game:
         self._quest_input = None       # the quest-stop NPC whose text field is open
         self._quest_task = None         # which of its to-do keys is being captured
         self._quest_buf = ""
+        self._quest_line = 0            # which dialogue line of the current beat is showing
+        # Quest buildings are entered like offices: you walk into a default floor and
+        # talk (E) to one NPC inside. These hold the in-visit state; None when not in one.
+        self._quest_building = None     # the NpcBuilding whose interior we're inside
+        self._quest_actor = None        # the Character standing in it to talk to
+        self._saved_office = None       # (current_building, interior) to restore on exit
+        self._park_return = None        # where you stood in the park before entering a building
         self.onboarding_active = False
         self._onboarding_to_park = False
         self.prologue_active = False
@@ -272,6 +261,8 @@ class Game:
         self.ceo_profile = None
         self.company = {}
         self._quest_input, self._quest_task, self._quest_buf = None, None, ""
+        self._quest_building = self._quest_actor = self._saved_office = None
+        self._park_return = None
         self.taskboard = tasks.TaskBoard(set())
         self.phone.board = self.taskboard
         for lst in (self.all_agents, self.all_brains, self.agents, self.brains):
@@ -873,20 +864,25 @@ class Game:
 
     # -- office park ----------------------------------------------------------
     def _enter_park(self) -> None:
+        # Leaving a quest building: restore your real office and drop the visit state.
+        if self._quest_building is not None:
+            if self._saved_office is not None:
+                self.current_building, self.interior = self._saved_office
+            self._quest_building = self._quest_actor = self._saved_office = None
+            self._close_quest_input()
+            self.scene.show_records = True
         self.mode = "park"
         self.selected = -1
         self._e_cooldown = 2       # don't let an exiting E press re-enter a building
         locomotion.set_bounds(*self.park.bounds)
         ceo = self.player.ch
-        ceo.x, ceo.z = self.park.spawn
+        # Drop back where you entered a building, else the default spawn.
+        if self._park_return is not None:
+            ceo.x, ceo.z = self._park_return
+            self._park_return = None
+        else:
+            ceo.x, ceo.z = self.park.spawn
         ceo.y, ceo.yaw = 0.0, 0.0       # face downtown / HQ (toward +z)
-        # Plant Robin a few steps ahead of you (toward HQ / +z), facing you, and bind
-        # the coffee-meeting quest stop so walking up + E opens the pitch.
-        self._robin_npc = next((n for n in self.park.npc if n.task == "cofounder"), None)
-        sx, sz = self.park.spawn
-        self.robin.x, self.robin.z = sx - 1.5, sz + 4.5
-        self.robin.yaw = math.degrees(math.atan2(ceo.x - self.robin.x,
-                                                  ceo.z - self.robin.z))
         # Point the camera the same way (behind the CEO, looking at HQ), else it
         # spawns facing away and HQ is off-screen behind you.
         self.camera.yaw = math.radians(180.0)
@@ -896,6 +892,8 @@ class Game:
     def _enter_office(self, building=None) -> None:
         # Always arrive in the building's lobby (then ride up to the wings). A new
         # building builds its interior first.
+        if self.mode == "park":            # remember where to drop you back on exit
+            self._park_return = (self.player.ch.x, self.player.ch.z)
         if building is not None and building is not self.current_building:
             self.current_building = building
             self.interior = interior.for_building(building, self.plans)
@@ -962,8 +960,91 @@ class Game:
         ceo.x, ceo.z = entry if entry is not None else \
             self.plan.grid_to_world(self.plan.cols / 2 - 0.5, self.plan.rows - 2)
 
+    # -- quest buildings: walk in, talk to the NPC inside ---------------------
+    QUEST_PLAN = "hq"          # default interior floor used for every quest building
+
+    def _enter_quest_building(self, npc) -> None:
+        """Walk into a quest building like an office: load a default floor with one
+        NPC to talk to (reuses the interior system). Your real office is saved and
+        restored when you leave. Talk to the NPC (E) to do the quest."""
+        if self.mode == "park":            # remember where to drop you back on exit
+            self._park_return = (self.player.ch.x, self.player.ch.z)
+        self._saved_office = (self.current_building, self.interior)
+        self._quest_building = npc
+        self.interior = interior.build_interior(npc.id, None, self.QUEST_PLAN, self.plans)
+        self.current_building = None
+        self.mode = "office"
+        self.scene.show_records = False        # the Files cabinet is your office only
+        lobby = self.interior.entry_room
+        plan = self.interior.rooms[lobby].plan(self.plans)
+        ent = plan.point("door") or plan.grid_to_world(plan.cols / 2.0, plan.rows - 1.5)
+        self._activate_room(lobby, entry=ent)
+        self._spawn_quest_actor(npc)
+        ceo = self.player.ch
+        ceo.y = 0.0
+        self._office_spawn = (ceo.x, ceo.z)
+        self._e_cooldown = 3                   # don't let the entering E talk immediately
+
+    def _spawn_quest_actor(self, npc) -> None:
+        """Place one NPC inside the quest building to talk to — Robin for the cafe,
+        otherwise a clerk named after the beat's speaker. Added to the drawn cast."""
+        keys = npc.pending(self.taskboard.done) or list(npc.task_keys())
+        key = keys[0] if keys else ""
+        lines = dialogue.lines_for(self.dialogue, key)
+        name = (lines[0].who if lines else "") or npc.name
+        cx, cz = self.plan.grid_to_world(self.plan.cols / 2.0 - 0.5, 2.0)
+        if npc.task == "cofounder":            # the cafe: it's Robin in person
+            actor = self.robin
+            actor.name = name or COFOUNDER_NAME
+        else:
+            actor = Character(name=name, role="", x=cx, z=cz,
+                              color=pr.Color(120, 200, 160, 255), dept="",
+                              model="Suit_Male.gltf", yaw=0.0)
+        actor.x, actor.z, actor.y = cx, cz, 0.0
+        ceo = self.player.ch
+        actor.yaw = math.degrees(math.atan2(ceo.x - actor.x, ceo.z - actor.z))
+        self._quest_actor = actor
+        if actor not in self.characters:
+            self.characters.append(actor)
+
+    def _near_quest_actor(self) -> bool:
+        a = self._quest_actor
+        if a is None:
+            return False
+        ceo = self.player.ch
+        return math.hypot(a.x - ceo.x, a.z - ceo.z) < TALK_RANGE
+
+    def _draw_quest_actor_prompt(self) -> None:
+        name = self._quest_actor.name if self._quest_actor else "them"
+        text = f"Press  E  to talk to {name}"
+        tw = pr.measure_text(text, 20)
+        x = (config.WINDOW_WIDTH - tw) // 2
+        pr.draw_rectangle(x - 12, config.WINDOW_HEIGHT - 132, tw + 24, 32, pr.Color(0, 0, 0, 160))
+        pr.draw_text(text, x, config.WINDOW_HEIGHT - 126, 20, pr.RAYWHITE)
+
+    def _draw_quest_building_hud(self) -> None:
+        """Minimal HUD inside a quest building: name bar + talk/leave prompts (no
+        office buttons). While a conversation is open, the dialogue modal owns it."""
+        npc = self._quest_building
+        pr.draw_rectangle(0, 0, config.WINDOW_WIDTH, 56, pr.Color(20, 24, 34, 230))
+        pr.draw_text(npc.name, 18, 14, 28, pr.RAYWHITE)
+        cash = f"Cash: ${self.cash:,}"
+        pr.draw_text(cash, config.WINDOW_WIDTH - pr.measure_text(cash, 22) - 18, 18, 22, pr.GOLD)
+        if self.investor.open:                   # Apex Ventures: the pitch panel
+            self._do_investor_action(self.investor.draw(self.company, self._rounds_raised()))
+            return
+        if self._quest_input is not None:        # mid-conversation: the modal handles it
+            self._draw_quest_input()
+            return
+        if self._near_quest_actor():
+            self._draw_quest_actor_prompt()
+        else:
+            portal = self._nearest_portal()
+            if portal is not None:
+                self._draw_portal_prompt(portal)
+
     def _visit_quest_stop(self, npc) -> None:
-        """Press-E at a quest-stop NPC building. Picks its next unfinished to-do (a
+        """Talk to a quest building's NPC. Picks its next unfinished to-do (a
         workshop like the Incubator steps through several); if that to-do asks for a
         decision, open a text field to capture it — so the answer reaches the agents'
         brains. Otherwise complete it outright."""
@@ -984,6 +1065,8 @@ class Game:
         task = tasks.TASK_BY_KEY.get(key)
         if task is not None and task.ask and task.field:
             self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
+            self._quest_line = 0                           # start at the beat's first line
+            self._e_cooldown = 4                           # don't let the opening E skip line 1
             while pr.get_char_pressed() > 0:               # drop the 'e' that opened it
                 pass
         else:
@@ -1009,35 +1092,47 @@ class Game:
                             subject=f"✓ {task.title}" if task else npc.name, ts=pr.get_time())
         self._e_cooldown = 8            # swallow the same E so it doesn't re-fire
 
+    def _close_quest_input(self) -> None:
+        self._quest_input, self._quest_task, self._quest_buf = None, None, ""
+        self._quest_line = 0
+
     def _draw_quest_input(self) -> None:
-        """Modal text field for a quest stop that asks for a company decision. Saves
-        on Enter (-> _complete_quest_stop), cancels on Esc. Mirrors the to-do input."""
+        """Modal conversation for a quest stop: step through the beat's dialogue
+        lines (E/Space to continue), THEN — as a separate step — fill in its `ask`
+        and Enter to save. The input field is its own step so the E you press to
+        advance never leaks into the text box. Lines from assets/dialogue.json."""
         npc = self._quest_input
         key = self._quest_task
         task = tasks.TASK_BY_KEY[key]
+        lines = dialogue.lines_for(self.dialogue, key)
+        n = len(lines)
+        # _quest_line is 0..n: 0..n-1 are the spoken lines; n is the answer step.
+        self._quest_line = max(0, min(self._quest_line, n))
+        in_input = self._quest_line >= n
+        cur_line = lines[min(self._quest_line, n - 1)]   # answer step keeps the last line up
+
         sw, sh = pr.get_screen_width(), pr.get_screen_height()
-        w, h = 600, 248
+        w, h = 600, 260
         x, y = (sw - w) // 2, (sh - h) // 2
         pr.draw_rectangle(0, 0, sw, sh, pr.Color(0, 0, 0, 160))
         pr.draw_rectangle(x, y, w, h, pr.Color(26, 30, 42, 255))
         pr.draw_rectangle_lines_ex(pr.Rectangle(x, y, w, h), 2, pr.Color(90, 210, 230, 255))
-        # speaker tab + the NPC's spoken line, so it reads like talking to someone.
-        # The coffee meeting is with Robin in person, not "the cafe".
-        speaker = COFOUNDER_NAME if key == "cofounder" else npc.name
+        # speaker tab — the line's own `who`, falling back to the building's name.
+        speaker = cur_line.who or npc.name
         pr.draw_rectangle(x, y - 32, max(200, pr.measure_text(speaker, 20) + 28), 32,
                           pr.Color(90, 210, 230, 255))
         pr.draw_text(speaker, x + 16, y - 26, 20, pr.Color(12, 24, 30, 255))
-        # Workshop progress (e.g. the canvas): show how many blocks remain.
+        # Workshop progress (e.g. the canvas): how many blocks remain.
         keys = npc.task_keys()
         if len(keys) > 1:
             step = sum(1 for k in keys if self.taskboard.is_done(k)) + 1
             prog = f"{step}/{len(keys)}"
             pr.draw_text(prog, x + w - pr.measure_text(prog, 18) - 16, y - 26, 18,
                          pr.Color(12, 24, 30, 255))
-        line = QUEST_LINES.get(key, "Let's get this sorted — fill it in for me.")
+        # the current spoken line (word-wrapped)
         ly = y + 18
         cur = ""
-        for word in line.split(" "):
+        for word in cur_line.text.split(" "):
             trial = (cur + " " + word).strip()
             if pr.measure_text(trial, 20) > w - 40 and cur:
                 pr.draw_text(cur, x + 20, ly, 20, pr.RAYWHITE)
@@ -1046,6 +1141,30 @@ class Game:
                 cur = trial
         if cur:
             pr.draw_text(cur, x + 20, ly, 20, pr.RAYWHITE)
+
+        if pr.is_key_pressed(pr.KEY_ESCAPE):
+            self._close_quest_input()
+            return
+
+        if not in_input:
+            # Spoken line: wait for the player to read, then advance to the next line
+            # (or to the answer step). Drain the keypress so it can't type into the field.
+            dots = "." * (1 + int(pr.get_time() * 2) % 3)
+            nextlabel = "to answer" if self._quest_line == n - 1 else "to continue"
+            pr.draw_text(f"Press  E  {nextlabel}{dots}", x + 20, y + h - 30, 16,
+                         pr.Color(150, 200, 230, 255))
+            advance = (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_SPACE)
+                       or pr.is_key_pressed(pr.KEY_ENTER)
+                       or pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
+                       or gamepad.pressed(gamepad.CROSS) or gamepad.pressed(gamepad.TRIANGLE))
+            if advance and self._e_cooldown == 0:
+                self._quest_line += 1
+                self._e_cooldown = 3            # debounce so one press = one step
+                while pr.get_char_pressed() > 0:  # don't let this key land in the field
+                    pass
+            return
+
+        # Answer step: the input field for this task's `ask`.
         pr.draw_text(task.ask.upper(), x + 20, y + h - 92, 14, pr.Color(120, 215, 235, 255))
         field = pr.Rectangle(x + 20, y + h - 72, w - 40, 40)
         pr.draw_rectangle_rec(field, pr.Color(14, 16, 24, 255))
@@ -1066,17 +1185,16 @@ class Game:
                      pr.GOLD if self._quest_buf else pr.Color(110, 120, 140, 255))
         pr.draw_text("Enter to save   ·   Esc to cancel", x + 20, y + h - 24, 14,
                      pr.Color(150, 160, 180, 255))
-        if pr.is_key_pressed(pr.KEY_ESCAPE):
-            self._quest_input, self._quest_task, self._quest_buf = None, None, ""
-        elif pr.is_key_pressed(pr.KEY_ENTER) and self._quest_buf.strip():
+        if pr.is_key_pressed(pr.KEY_ENTER) and self._quest_buf.strip():
             self._complete_quest_stop(npc, key, self._quest_buf.strip())
-            # Workshop flow: roll straight on to the next unfilled block; otherwise close.
+            # Workshop flow: roll on to the next unfilled block (restart its dialogue);
+            # otherwise close.
             nxt = next((k for k in npc.pending(self.taskboard.done)
                         if tasks.TASK_BY_KEY.get(k) and tasks.TASK_BY_KEY[k].ask), None)
             if nxt is not None:
-                self._quest_task, self._quest_buf = nxt, ""
+                self._quest_task, self._quest_buf, self._quest_line = nxt, "", 0
             else:
-                self._quest_input, self._quest_task, self._quest_buf = None, None, ""
+                self._close_quest_input()
 
     def _park_frame(self, dt: float) -> None:
         """One frame of the walkable park: move, lease/enter, draw."""
@@ -1088,26 +1206,16 @@ class Game:
                   or self.dossier.open or self.investor.open or self.phone.open)
         if self.phone.open:                    # the Nokia works out in the city too
             self.phone.update()
-        # Robin greets you at spawn until you've won them over (the coffee meeting).
-        show_robin = (self._robin_npc is not None
-                      and not self.taskboard.is_done("cofounder"))
         if not frozen:
             self.player.update(dt, self.camera)
             ceo.x, ceo.z = self.park.collide(ceo.x, ceo.z)   # block walking through buildings
             self.camera.update(dt, self.player.ch)
             ceo.update(dt, self.registry)
-            if show_robin:                       # keep Robin turned toward you, idling
-                self.robin.yaw = math.degrees(math.atan2(ceo.x - self.robin.x,
-                                                         ceo.z - self.robin.z))
-                self.robin.update(dt, self.registry)
         self.pedestrians.update(dt, ceo.x, ceo.z, self.registry)  # ambient crowd
         near = self.park.nearest(ceo.x, ceo.z)
         # Quest-stop NPC buildings (Chamber of Commerce, …) are only offered when no
         # lease lot is in reach, so E is never ambiguous (they never share a corner).
         near_npc = self.park.nearest_npc(ceo.x, ceo.z) if near is None else None
-        robin_near = (show_robin
-                      and math.hypot(self.robin.x - ceo.x, self.robin.z - ceo.z)
-                      <= parkmod.REACH)
 
         if not frozen:
             if pr.is_key_pressed(pr.KEY_P):
@@ -1125,18 +1233,14 @@ class Game:
                     self._open_hire_store()
                 elif near_npc.is_store:          # The Outfitters → wardrobe store
                     self._open_outfitter()
-                else:
-                    self._visit_quest_stop(near_npc)
-            elif robin_near and press_e:         # Robin at spawn → the coffee meeting
-                self._visit_quest_stop(self._robin_npc)
+                else:                            # quest building → walk inside and talk
+                    self._enter_quest_building(near_npc); return
 
         pr.begin_drawing()
         pr.clear_background(self.daylight.sky_color())
         self.park.draw(self.camera.camera, self.season.name, self.taskboard.done)
         pr.begin_mode_3d(self.camera.camera)
         self.pedestrians.draw(self.registry)
-        if show_robin:
-            self.robin.draw(self.registry)
         ceo.draw(self.registry)
         pr.end_mode_3d()
         self._draw_park_overlay(near, near_npc)
@@ -1169,32 +1273,6 @@ class Game:
         if sub:
             sw = pr.measure_text(sub, 13)
             pr.draw_text(sub, sx - sw // 2, sy + 18, 13, sub_color)
-
-    def _draw_robin_marker(self) -> None:
-        """A bobbing gold "!" and prompt floating over Robin while the coffee meeting
-        is still pending — the player's very first objective. Drawn in the 2D overlay
-        pass (after end_mode_3d), so it projects Robin's head to the screen."""
-        r = self.robin
-        cam = self.camera.camera
-        fx, fz = cam.target.x - cam.position.x, cam.target.z - cam.position.z
-        if (r.x - cam.position.x) * fx + (r.z - cam.position.z) * fz <= 0:
-            return                                  # behind the camera
-        bob = math.sin(pr.get_time() * 3.0) * 0.18
-        sp = pr.get_world_to_screen(
-            pr.Vector3(r.x, r.y + r.height + 0.9 + bob, r.z), cam)
-        if sp.x < 0 or sp.x > config.WINDOW_WIDTH:
-            return
-        sx, sy = int(sp.x), int(sp.y)
-        pr.draw_circle(sx, sy, 15, pr.Color(0, 0, 0, 120))
-        pr.draw_circle(sx, sy, 13, pr.Color(255, 205, 70, 255))   # the iconic "!" disc
-        bw = pr.measure_text("!", 26)
-        pr.draw_text("!", sx - bw // 2, sy - 16, 26, pr.Color(40, 30, 10, 255))
-        near = (math.hypot(r.x - self.player.ch.x, r.z - self.player.ch.z)
-                <= parkmod.REACH)
-        hint = "Press E: coffee with Robin" if near else "Robin · win them over to join you"
-        hw = pr.measure_text(hint, 16)
-        pr.draw_rectangle(sx - hw // 2 - 6, sy + 20, hw + 12, 24, pr.Color(0, 0, 0, 170))
-        pr.draw_text(hint, sx - hw // 2, sy + 24, 16, pr.Color(120, 215, 235, 255))
 
     def _draw_clock(self) -> None:
         """Top-center chip naming the current time-of-day phase and season."""
@@ -1254,9 +1332,6 @@ class Game:
             self._label_3d(p.name, "City Park", pr.Color(150, 230, 175, 255),
                            p.x, 3.6, p.z, 16, main_color=pr.Color(170, 235, 190, 255))
 
-        # Robin: a bobbing "!" + prompt over the co-founder, until you've met them.
-        if self._robin_npc is not None and not self.taskboard.is_done("cofounder"):
-            self._draw_robin_marker()
 
         # top bar: cash + rent ledger
         pr.draw_rectangle(0, 0, config.WINDOW_WIDTH, 56, pr.Color(20, 24, 34, 230))
@@ -1293,10 +1368,13 @@ class Game:
             elif len(near_npc.task_keys()) > 1:        # workshop: the canvas
                 prompt = (f"Press  E  at {near_npc.name}  to work your business model "
                           f"canvas   -   {len(pending)} left")
+            elif pending[0] == "raise_round":          # the VC firm: pitch, not a to-do
+                prompt = f"Press  E  at {near_npc.name}  to pitch investors"
             else:
-                task = tasks.TASK_BY_KEY[pending[0]]
+                task = tasks.TASK_BY_KEY.get(pending[0])
                 bonus = f"   -   +${near_npc.reward:,} seed money" if near_npc.reward else ""
-                prompt = f"Press  E  at {near_npc.name}  to {task.title.lower()}{bonus}"
+                title = task.title.lower() if task else "help out"
+                prompt = f"Press  E  at {near_npc.name}  to {title}{bonus}"
         if prompt is not None:
             tw = pr.measure_text(prompt, 20)
             x = (config.WINDOW_WIDTH - tw) // 2
@@ -1425,8 +1503,10 @@ class Game:
                 self.jobs.update()
             elif self.elevator_open or self.shop.open:
                 pass  # the modal handles its own input inside draw()
-            elif self.dossier.open:
+            elif self.dossier.open or self.investor.open:
                 pass  # a full-screen panel is up; it's modal — freeze movement/keys
+            elif self._quest_input is not None:
+                pass  # talking to a quest NPC; the dialogue modal owns the keyboard
             else:
                 self.player.update(dt, self.camera, self.characters)
                 self.camera.update(dt, self.player.ch)
@@ -1464,8 +1544,11 @@ class Game:
                 # otherwise E uses a nearby portal (doorway / elevator / exit).
                 portal = self._nearest_portal()
                 if pr.is_key_pressed(pr.KEY_E) and self._e_cooldown == 0:
-                    if self._near_records():
-                        if not self.dossier.open:
+                    if self._near_quest_actor():        # talk to the quest NPC inside
+                        self._visit_quest_stop(self._quest_building)
+                        self._e_cooldown = 4
+                    elif self._quest_building is None and self._near_records():
+                        if not self.dossier.open:       # Files cabinet (your office only)
                             self.dossier.toggle()
                         self._e_cooldown = 4
                     elif portal is not None:
@@ -1519,6 +1602,8 @@ class Game:
                     self.shop.close()
                 elif isinstance(action, tuple) and action[0] == "buy":
                     self.buy_item(action[1])
+            elif self._quest_building is not None:
+                self._draw_quest_building_hud()
             else:
                 draw_hud(self.company_name, self.cash, len(self.agents), config.HIRE_COST, sel)
                 if shop_btn.draw():

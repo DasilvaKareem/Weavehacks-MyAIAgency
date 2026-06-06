@@ -35,6 +35,7 @@ class Scene:
         self.floor_color = FLOOR_COLOR                  # repaintable via the shop
         self.wall_color = WALL_COLOR
         self.door_color = DOOR_COLOR
+        self.show_records = True                         # the Company Files cabinet (your office only)
         self.set_plan(plan or floorplan.DEFAULT_HQ)
         self._update_camera_position()
 
@@ -94,7 +95,8 @@ class Scene:
         self._draw_meeting_area()
         self._draw_lounges()
         self._draw_fixtures(d)
-        self._draw_records_cabinet(*self._records_pos)
+        if self.show_records:
+            self._draw_records_cabinet(*self._records_pos)
 
     def _draw_door(self, w: float, d: float, wall_h: float) -> None:
         """A door set into the back wall (slightly proud of it), with a frame and
