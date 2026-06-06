@@ -110,6 +110,18 @@ class Dispatcher:
     def stop(self) -> None:
         self._run = False
 
+    def drain_once(self) -> int:
+        """Claim and run every currently-queued task, wait for them, return the
+        count. Used by `worker_service --once`."""
+        futs = []
+        while True:
+            task = claim()
+            if task is None:
+                break
+            futs.append(self._pool.submit(self._do, task))
+        concurrent.futures.wait(futs)
+        return len(futs)
+
     def _loop(self) -> None:
         while self._run:
             self._active = {f for f in self._active if not f.done()}

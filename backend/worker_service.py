@@ -75,17 +75,38 @@ def execute_claimed(store: AgentStore, run: JobRunRow) -> None:
             store.set_status(run.agent_id, "idle")
 
 
+def _post_task_result(store: AgentStore, task: dict, result: str, agent) -> None:
+    """Persist a finished firehose task so it's durable + visible in chat."""
+    who = agent.name if agent else f"role:{task.get('role') or '?'}"
+    print(f"  [task] {who}: {str(task.get('text',''))[:48]} -> {result[:80]}")
+    if agent is not None:
+        try:
+            store.add_message(agent.id, "ai",
+                              f"(task) {task.get('text','')}\n\n{result}")
+        except Exception:
+            pass
+
+
 def run_service(store: AgentStore, *, once: bool = False) -> None:
+    from . import task_queue
+
     with _singleton_lock(store):
         interrupted = store.fail_interrupted_runs()
         if interrupted:
             print(f"Marked {interrupted} interrupted run(s) as errors.")
-        print(f"Company.AI worker active. Polling every {config.WORKER_POLL_S:g}s.")
+        # The fire-and-forget task firehose: drains the Redis task queue with the
+        # same scale cap as the rest of the company. Runs alongside scheduled jobs.
+        dispatcher = task_queue.Dispatcher(
+            store=store, on_result=lambda t, r, a: _post_task_result(store, t, r, a))
+        print(f"Company.AI worker active. Polling every {config.WORKER_POLL_S:g}s "
+              f"| task queue: {task_queue.pending()} pending.")
         pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, config.WORKER_CONCURRENCY),
             thread_name_prefix="company-job",
         )
         active: set[concurrent.futures.Future] = set()
+        if not once:
+            dispatcher.start()        # background firehose drain for the long-running daemon
         try:
             while True:
                 scan_due(store)
@@ -96,12 +117,16 @@ def run_service(store: AgentStore, *, once: bool = False) -> None:
                         break
                     active.add(pool.submit(execute_claimed, store, claimed))
                 if once:
+                    n = dispatcher.drain_once()   # also clear any queued firehose tasks
+                    if n:
+                        print(f"Drained {n} queued task(s).")
                     concurrent.futures.wait(active)
                     return
                 time.sleep(config.WORKER_POLL_S)
         except KeyboardInterrupt:
             print("\nstopped.")
         finally:
+            dispatcher.stop()
             pool.shutdown(wait=True)
 
 
