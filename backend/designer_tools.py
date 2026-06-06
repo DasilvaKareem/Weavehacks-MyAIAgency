@@ -21,8 +21,17 @@ IMAGE_MODEL = os.getenv("COMPANY_AI_IMAGE_MODEL", "gemini-2.5-flash-image")
 
 
 def output_dir() -> Path:
-    """Where generated images land (override with COMPANY_AI_IMAGE_DIR)."""
-    d = Path(os.getenv("COMPANY_AI_IMAGE_DIR", "") or (Path.cwd() / "generated"))
+    """Where generated images land: the active company's assets/ folder (override
+    with COMPANY_AI_IMAGE_DIR)."""
+    override = os.getenv("COMPANY_AI_IMAGE_DIR", "")
+    if override:
+        d = Path(override)
+    else:
+        try:
+            from . import workspace
+            d = workspace.asset_dir(workspace.active_slug())
+        except Exception:
+            d = Path.cwd() / "generated"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

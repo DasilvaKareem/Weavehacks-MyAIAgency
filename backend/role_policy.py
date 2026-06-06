@@ -17,23 +17,31 @@ from pathlib import Path
 
 log = logging.getLogger("company.policy")
 
-_PATH = Path(__file__).resolve().parent.parent / "company_role_policy.json"
-_cache: dict | None = None
+_cache: dict[str, dict] = {}  # keyed by file path → so each company is isolated
+
+
+def _path() -> Path:
+    """This company's role-policy file, next to its db (per-company isolation)."""
+    try:
+        from . import workspace
+        return Path(workspace.active_db_path()).parent / "role_policy.json"
+    except Exception:
+        return Path(__file__).resolve().parent.parent / "company_role_policy.json"
 
 
 def _load() -> dict:
-    global _cache
-    if _cache is None:
+    key = str(_path())
+    if key not in _cache:
         try:
-            _cache = json.loads(_PATH.read_text())
+            _cache[key] = json.loads(Path(key).read_text())
         except Exception:
-            _cache = {}
-    return _cache
+            _cache[key] = {}
+    return _cache[key]
 
 
 def _save() -> None:
     try:
-        _PATH.write_text(json.dumps(_cache or {}, indent=2))
+        _path().write_text(json.dumps(_load(), indent=2))
     except Exception as exc:  # never let a policy write break a run
         log.warning("could not persist role policy: %s", exc)
 

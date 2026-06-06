@@ -26,8 +26,17 @@ VIDEO_POLL_S = config._float("COMPANY_AI_VIDEO_POLL", 10.0)
 
 
 def output_dir() -> Path:
-    """Where generated videos land (shares COMPANY_AI_IMAGE_DIR / ./generated)."""
-    d = Path(os.getenv("COMPANY_AI_IMAGE_DIR", "") or (Path.cwd() / "generated"))
+    """Where generated videos land: the active company's assets/ folder (override
+    with COMPANY_AI_IMAGE_DIR)."""
+    override = os.getenv("COMPANY_AI_IMAGE_DIR", "")
+    if override:
+        d = Path(override)
+    else:
+        try:
+            from . import workspace
+            d = workspace.asset_dir(workspace.active_slug())
+        except Exception:
+            d = Path.cwd() / "generated"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

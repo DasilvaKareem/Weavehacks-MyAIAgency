@@ -19,3 +19,6 @@ node_modules/
 # OS
 .DS_Store
 company_role_policy.json
+
+# Per-company workspaces (dbs + per-company data, not source)
+workspaces/

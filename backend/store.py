@@ -12,11 +12,14 @@ cleanly to Postgres later if the company outgrows a local file.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger("company.store")
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "company.db"
 
@@ -313,7 +316,12 @@ class ApprovalRow:
 
 
 class AgentStore:
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        # No explicit path → open the ACTIVE company's db (per-company workspace).
+        # Explicit path still honored (tests, --db flags, sub-stores).
+        if db_path is None:
+            from . import workspace
+            db_path = workspace.active_db_path()
         self.db_path = str(db_path)
         with self._conn() as c:
             c.executescript(_SCHEMA)
@@ -558,7 +566,18 @@ class AgentStore:
                 "disk_path=NULL, updated_at=datetime('now')",
                 (norm, name, folder, kind, mime, content, size, author_id, author_name),
             )
+        self._mirror_to_disk(norm, content)
         return self.fs_get(norm)  # type: ignore[return-value]
+
+    def _mirror_to_disk(self, norm_path: str, content: str) -> None:
+        """Write a drive text file out to this company's browsable drive/ folder,
+        next to its db (workspaces/<slug>/drive/<path>). Best-effort, never fatal."""
+        try:
+            dest = Path(self.db_path).parent / "drive" / norm_path.lstrip("/")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content or "")
+        except Exception as exc:  # pragma: no cover - mirror is a convenience
+            log.debug("drive mirror skipped for %s: %s", norm_path, exc)
 
     def fs_attach(self, path: str, disk_path: str, kind: str = "binary",
                   author_id: str | None = None, author_name: str = "CEO",
