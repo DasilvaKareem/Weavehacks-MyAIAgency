@@ -80,7 +80,7 @@ def is_attempt(call) -> bool:
     1:1 chats (chat_attempt). One attempt = one task; call.exception set iff it
     actually failed. The right denominator for crash rate.
     """
-    return op_short(call) in ("agent_attempt", "chat_attempt")
+    return op_short(call) in ("agent_attempt", "chat_attempt", "autonomous_attempt")
 
 
 def call_cost(call) -> float:

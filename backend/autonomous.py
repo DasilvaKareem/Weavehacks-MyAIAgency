@@ -1,14 +1,24 @@
 """Execute one durable background run as a real hired agent."""
 from __future__ import annotations
 
-from . import company, config
+from . import company, config, role_policy
 from .approval_policy import wrap_tools
 from .agents import _text
 from .llm import get_llm
 from .mcp_bridge import run_tool_loop_sync
+from .observability import tag, traced
 from .persona import generate as make_persona, render_prompt as render_persona
 from .store import AgentStore, JobRunRow
 from .tool_builder import build_tools_sync
+
+
+@traced
+def autonomous_attempt(llm, msgs, tools, max_steps=None) -> str:
+    """One 24/7 agent's scheduled run — traced as its own op so Weave attributes
+    the work (and any crash) to that specific agent, same as chat/graph workers."""
+    if tools:
+        return run_tool_loop_sync(llm, msgs, tools, max_steps=max_steps).strip()
+    return _text(llm.invoke(msgs)).strip()
 
 
 def _context(store: AgentStore, run: JobRunRow) -> str:
@@ -54,7 +64,13 @@ def execute_run(store: AgentStore, run: JobRunRow) -> str:
     )
     tools = build_tools_sync(agent.role, agent.id, agent.name)
     tools = wrap_tools(tools, store, run.id, agent.trust_tier)
-    llm = get_llm(model=agent.model or config.GEMINI_MODEL)
-    if tools:
-        return run_tool_loop_sync(llm, [("system", system), ("human", human)], tools).strip()
-    return _text(llm.invoke([("system", system), ("human", human)])).strip()
+    # Respect any HR/optimizer retune for this role (cheaper model / tool budget),
+    # so the self-improvement loop reaches the 24/7 agents too.
+    model = role_policy.model(agent.role) or agent.model or config.GEMINI_MODEL
+    llm = get_llm(model=model)
+    msgs = [("system", system), ("human", human)]
+    # Tag the run with the agent's identity so its cost/latency/crashes are
+    # attributed to THEM in Weave — visible to HR's staffing_review and the
+    # Observability Engineer, exactly like 1:1 chats and graph workers.
+    with tag(agent_id=agent.id, agent_name=agent.name, role=agent.role, kind="autonomous"):
+        return autonomous_attempt(llm, msgs, tools, role_policy.max_steps(agent.role))
