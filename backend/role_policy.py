@@ -39,7 +39,13 @@ def _save() -> None:
 
 
 def _key(role: str) -> str:
-    return (role or "").strip().lower()
+    """Canonical bucket so HR retuning 'Research Analyst' and the graph worker
+    running as 'Researcher' (and that agent's 1:1 chats) all hit the same policy."""
+    try:
+        from .weave_metrics import canon_role
+        return canon_role(role)
+    except Exception:
+        return (role or "").strip().lower()
 
 
 def get(role: str) -> dict:

@@ -16,6 +16,7 @@ from .agents import _text          # response-content normalizer (str | list-of-
 from . import company
 from .config import GEMINI_MODEL, role_profile
 from .llm import get_llm
+from . import role_policy
 from .mcp_bridge import run_tool_loop_sync
 from .observability import tag, traced
 from .persona import generate as make_persona, render_prompt as render_persona
@@ -34,12 +35,13 @@ _PERSONA = (
 
 
 @traced
-def chat_attempt(llm, msgs, tools, on_step, on_token) -> str:
+def chat_attempt(llm, msgs, tools, on_step, on_token, max_steps=None) -> str:
     """One hired agent's reply attempt — traced as its own op so Weave records
     THIS agent's real cost/latency (and any crash) tagged to their id. Raises on
     hard failure; AgentChat.send catches it outside to salvage partial streams."""
     if tools:
-        return run_tool_loop_sync(llm, msgs, tools, on_step=on_step, on_token=on_token).strip()
+        return run_tool_loop_sync(llm, msgs, tools, max_steps=max_steps,
+                                  on_step=on_step, on_token=on_token).strip()
     return _text(llm.invoke(msgs)).strip()
 
 
@@ -113,12 +115,18 @@ class AgentChat:
             if on_token:
                 on_token(tok)
 
+        # Respect any HR/optimizer retune for this agent's role (cheaper model /
+        # smaller tool budget) — this is how HR's self-improvement actually changes
+        # what the agent costs on its next turn.
+        pol_model = role_policy.model(self.agent.role)
+        llm = get_llm(model=pol_model) if pol_model else self.llm
+        pol_steps = role_policy.max_steps(self.agent.role)
         # Tag this turn with the hired agent's identity so its real traces are
         # attributed to THEM in Weave — the data HR reads to fire/repurpose.
         with tag(agent_id=self.agent.id, agent_name=self.agent.name,
                  role=self.agent.role, kind="chat"):
             try:
-                reply = chat_attempt(self.llm, msgs, tools, on_step, _emit)
+                reply = chat_attempt(llm, msgs, tools, on_step, _emit, max_steps=pol_steps)
             except Exception:
                 partial = "".join(collected).strip()
                 if not partial:

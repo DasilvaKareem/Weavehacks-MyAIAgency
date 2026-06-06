@@ -167,6 +167,22 @@ def load_hr_tools() -> list:
         return f"Repurposed {a.name}: {old} → {new_role}. Reason on record: {reason}"
 
     @tool
+    def retune_agent(agent_id: str, reason: str) -> str:
+        """Make an agent LEANER instead of firing or reassigning — caps its tool
+        budget and drops it to the cheaper model so it costs less on its next
+        run/chat. Use for a REPURPOSE verdict when the agent works fine but is too
+        expensive. Cheaper than firing-and-rehiring, and reversible."""
+        from . import role_policy, config
+        a = store.get(agent_id)
+        if a is None:
+            return f"No agent with id {agent_id!r}. Run list_team to see valid ids."
+        new_steps = max(1, config.MCP_MAX_TOOL_STEPS // 3)
+        role_policy.set(a.role, max_tool_steps=new_steps, model=config.CHEAP_MODEL)
+        store.add_evaluation(a.id, 60, f"Retuned for efficiency: {reason}", reviewer="HR")
+        return (f"Retuned {a.name} ({a.role}): tool budget → {new_steps} steps, "
+                f"model → {config.CHEAP_MODEL}. Next run will cost less. Reason: {reason}")
+
+    @tool
     def team_report() -> str:
         """A one-shot overview of the whole company: headcount, a breakdown by
         status and department, and the average performance score. Use this when
@@ -194,4 +210,4 @@ def load_hr_tools() -> list:
         return "\n".join(out)
 
     return [list_team, review_agent, evaluate_agent, staffing_review,
-            repurpose_agent, fire_agent, team_report]
+            repurpose_agent, retune_agent, fire_agent, team_report]
