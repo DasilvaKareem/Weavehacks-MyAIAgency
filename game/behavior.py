@@ -105,6 +105,11 @@ class BotBrain:
         self._route_i = 0
         self._last_ceo = None
         self._rng = random.Random((hash(ch.name) ^ 0x5bd1e995) & 0xFFFFFFFF)
+        # Heads-down work session: seconds this bot stays at its desk before it's
+        # even eligible for a break. The Director won't pull a bot while this is >0,
+        # so agents spend most of their time working, not wandering. Focus extends
+        # it; the initial value is staggered by the rng so they don't all break at once.
+        self._work_timer = self._work_session_secs()
 
     # -- public API the game / director / chat use ---------------------------
     def command(self, kind: str, target=None, priority: int = P_USER,
@@ -265,12 +270,21 @@ class BotBrain:
             if self.ch.desk is not None:
                 self.ch.yaw = math.degrees(math.atan2(
                     self.ch.desk[0] - self.ch.x, self.ch.desk[1] - self.ch.z))
+        self._work_timer -= dt                     # burn down the heads-down stretch
         locomotion.apply_anim(self.ch, moving=False, seated=self._seated)
 
     # -- helpers -------------------------------------------------------------
     def _go_work(self) -> None:
         self.state = WORK
+        self._work_timer = self._work_session_secs()   # commit to a fresh work stretch
         self._go_to(self.policy.home)
+
+    def _work_session_secs(self) -> float:
+        """How long this bot stays heads-down before a break is even considered.
+        Focus stretches it: focus 0.1 -> ~45s, 0.6 -> ~95s, 0.9 -> ~125s, with
+        per-bot jitter so the office doesn't pulse in unison."""
+        base = 35.0 + 100.0 * self.policy.focus
+        return base * self._rng.uniform(0.7, 1.3)
 
     def _go_to(self, point) -> bool:
         self._seated = False          # any new walk stands the bot up first
@@ -355,13 +369,21 @@ class Director:
                 continue
             if b.ch.status == "working":      # busy bots stay at their desk
                 continue
+            if b._work_timer > 0.0:           # mid heads-down session — leave them be
+                continue
+            # The session has elapsed: this bot MAY take a short break. Even now it
+            # usually just keeps working a bit longer — so movement stays occasional,
+            # weighted by personality. (Knobs are 0..1; the 0.30 keeps breaks rare.)
             r = b._rng.random()
-            roam_p = b.policy.restlessness * 0.5
-            social_p = b.policy.sociability * 0.4
-            if r < roam_p:
-                b.start_roam()
-            elif r < roam_p + social_p:
+            social_p = b.policy.sociability * 0.30
+            roam_p = b.policy.restlessness * 0.30
+            if r < social_p:
                 b.start_socialize()
+            elif r < social_p + roam_p:
+                b.start_roam()
+            else:
+                # Not in the mood to get up — stay heads-down and re-check soon.
+                b._work_timer = b._rng.uniform(8.0, 20.0)
 
     # -- LLM budget gate (used by the async planner) -------------------------
     def can_spend_llm(self) -> bool:
