@@ -113,6 +113,19 @@ build on it. Then report your concrete result in under 120 words."""
 
 
 @traced
+async def agent_attempt(llm, prompt: str, tools: list, max_steps):
+    """One agent's attempt at its task. Traced as its own op and RAISES on failure
+    so Weave records the crash (tagged with the role) — the worker catches it
+    outside this op so the company run still survives. This is what makes the
+    Observability Engineer's per-agent crash rate real instead of always 0%.
+    """
+    if tools:
+        return await run_tool_loop(llm, [("human", prompt)], tools, max_steps=max_steps)
+    resp = await llm.ainvoke(prompt)
+    return _text(resp).strip()
+
+
+@traced
 async def worker(state: WorkerState) -> dict:
     task: Task = state["task"]
     # Honor any optimizer-set overrides for this role (cheaper model / smaller
@@ -141,12 +154,9 @@ async def worker(state: WorkerState) -> dict:
         # reads these back to find who's expensive or failing).
         with tag(role=task.role, agent_id=task.agent_id, kind="worker"):
             try:
-                if tools:
-                    output = await run_tool_loop(
-                        llm, [("human", prompt)], tools, max_steps=pol_steps)
-                else:
-                    resp = await llm.ainvoke(prompt)
-                    output = _text(resp).strip()
+                # The attempt is a traced op INSIDE the tag, so its call carries
+                # the role and — on failure — the exception, which Weave records.
+                output = await agent_attempt(llm, prompt, tools, pol_steps)
                 result = Result(
                     task_id=task.id, role=task.role, agent_id=task.agent_id, output=output
                 )

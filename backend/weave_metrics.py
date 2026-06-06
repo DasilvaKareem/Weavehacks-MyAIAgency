@@ -57,6 +57,15 @@ def is_llm_call(call) -> bool:
     return "Llm." in (getattr(call, "op_name", "") or "")
 
 
+def is_attempt(call) -> bool:
+    """The per-task agent op (agents.agent_attempt) — one per task, raises on crash.
+
+    This is the right denominator for crash rate: one attempt = one task, and its
+    call.exception is set iff the agent actually failed.
+    """
+    return op_short(call) == "agent_attempt"
+
+
 def call_cost(call) -> float:
     total = 0.0
     for c in costs(call).values():
@@ -98,34 +107,43 @@ def fetch_calls(client, limit: int = 500):
 
 # --- aggregations -----------------------------------------------------------
 
+def _row(rows: dict, role: str) -> dict:
+    return rows.setdefault(role, {"calls": 0, "in": 0, "out": 0, "cost": 0.0,
+                                  "lat": 0.0, "timed": 0, "tasks": 0, "errors": 0})
+
+
 def role_breakdown(calls) -> dict:
-    """Per-role economics from the leaf LLM worker calls."""
+    """Per-role economics: cost/tokens/latency from the leaf LLM calls, and crash
+    rate from the per-task agent_attempt ops (one per task, exception iff crashed).
+    """
     rows: dict[str, dict] = {}
     for c in calls:
-        if not is_llm_call(c):
-            continue
         role = attrs(c).get("role")
         if not role:
             continue
-        r = rows.setdefault(role, {"calls": 0, "in": 0, "out": 0, "cost": 0.0,
-                                   "lat": 0.0, "timed": 0, "errors": 0})
-        r["calls"] += 1
-        pin, pout = call_tokens(c)
-        r["in"] += pin
-        r["out"] += pout
-        r["cost"] += call_cost(c)
-        lat = latency_s(c)
-        if lat is not None:
-            r["lat"] += lat
-            r["timed"] += 1
-        if getattr(c, "exception", None):
-            r["errors"] += 1
+        if is_llm_call(c):  # cost / tokens / latency
+            r = _row(rows, role)
+            r["calls"] += 1
+            pin, pout = call_tokens(c)
+            r["in"] += pin
+            r["out"] += pout
+            r["cost"] += call_cost(c)
+            lat = latency_s(c)
+            if lat is not None:
+                r["lat"] += lat
+                r["timed"] += 1
+        elif is_attempt(c):  # crash rate (one attempt = one task)
+            r = _row(rows, role)
+            r["tasks"] += 1
+            if getattr(c, "exception", None):
+                r["errors"] += 1
     for r in rows.values():
         r["tokens"] = r["in"] + r["out"]
         r["cost_per_call"] = r["cost"] / r["calls"] if r["calls"] else 0.0
         r["in_per_call"] = r["in"] / r["calls"] if r["calls"] else 0.0
         r["avg_latency"] = r["lat"] / r["timed"] if r["timed"] else 0.0
-        r["error_rate"] = r["errors"] / r["calls"] if r["calls"] else 0.0
+        # crash rate over real tasks; 0 when a role hasn't run a full task yet
+        r["error_rate"] = r["errors"] / r["tasks"] if r["tasks"] else 0.0
     return rows
 
 
@@ -213,10 +231,12 @@ def render_breakdown(rows: dict) -> str:
     order = sorted(rows.items(), key=lambda kv: kv[1]["cost"], reverse=True)
     lines = ["Per-agent economics (from live Weave traces):"]
     for role, r in order:
+        crash = (f"{r['error_rate']*100:.0f}% crash ({r['errors']}/{r['tasks']} tasks)"
+                 if r["tasks"] else "no tasks yet")
         lines.append(
             f"- {role}: {r['calls']} call(s), {r['tokens']:,} tok, "
             f"{fmt_usd(r['cost'])} ({fmt_usd(r['cost_per_call'])}/call), "
-            f"{r['avg_latency']:.2f}s avg, {r['error_rate']*100:.0f}% errors"
+            f"{r['avg_latency']:.2f}s avg, {crash}"
         )
     return "\n".join(lines)
 
