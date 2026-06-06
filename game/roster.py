@@ -23,6 +23,7 @@ ROLES = [
     ("Human Resources Manager", "People", pr.RED),   # manages/evaluates/fires agents
     ("Support Specialist", "Operations", pr.SKYBLUE),
     ("DevOps Engineer", "Engineering", pr.RED),      # Opsera-powered: see backend ROLE_PROFILES
+    ("Observability Engineer", "Engineering", pr.DARKPURPLE),  # W&B Weave: reads the company's LLM traces
     ("Research Analyst", "Research", pr.PURPLE),     # Apify: web search
     ("Market Analyst", "Research", pr.MAROON),       # Apify: e-commerce / market data
     ("Executive Assistant", "Operations", pr.YELLOW),  # Composio: Gmail + Calendar

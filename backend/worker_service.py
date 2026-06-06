@@ -111,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
         load_dotenv()
     except ImportError:
         pass
+    from .observability import init_weave
+
+    init_weave()  # trace scheduled autonomous runs (no-op without WANDB_API_KEY)
     ap = argparse.ArgumentParser(description="Run Company.AI autonomous schedules.")
     ap.add_argument("--db", default=None, help="path to company.db")
     ap.add_argument("--once", action="store_true", help="scan and drain once, then exit")

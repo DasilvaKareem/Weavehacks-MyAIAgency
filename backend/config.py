@@ -26,6 +26,9 @@ def _float(name: str, default: float) -> float:
 # --- Model ---
 GEMINI_MODEL = os.getenv("COMPANY_AI_MODEL", "gemini-3.1-flash-lite")
 GEMINI_TEMPERATURE = _float("COMPANY_AI_TEMPERATURE", 0.7)
+# The cheapest model the optimizer can downgrade an expensive role to (used by
+# backend/optimizer.py when a role's cost is driven by model price, not tools).
+CHEAP_MODEL = os.getenv("COMPANY_AI_CHEAP_MODEL", "gemini-3.1-flash-lite")
 
 # --- Scale / concurrency ---
 # Hard ceiling on agents calling the model simultaneously. Hiring 100 agents is
@@ -91,6 +94,17 @@ DAYTONA_TARGET = os.getenv("DAYTONA_TARGET", "")     # optional region/target
 DAYTONA_PUBLIC_PREVIEW = os.getenv("COMPANY_AI_DAYTONA_PUBLIC", "1").lower() not in (
     "0", "false", "no", "off",
 )
+
+# --- W&B Weave (observability: tracing + the Observability Engineer agent) ---
+# Set WANDB_API_KEY to turn on tracing: weave.init() then auto-patches every
+# Gemini/LangChain call (see backend/observability.py), and the Observability
+# Engineer role can read those traces (cost/latency/errors) via its tools (see
+# backend/weave_tools.py). Unset = graceful no-op; the game runs untraced and the
+# agent degrades to prompt-only, like every other integration.
+# NOTE: the key is read LIVE in observability.py (like llm.py's Gemini key), not
+# cached here, so a .env loaded after import still enables it. WEAVE_PROJECT is a
+# default only.
+WEAVE_PROJECT = os.getenv("WEAVE_PROJECT", "company-ai")  # or "entity/company-ai"
 
 # --- Composio (Google & SaaS app agents) ---
 # Composio handles per-user OAuth for hundreds of apps; a role maps to one or more
@@ -298,6 +312,26 @@ ROLE_PROFILES = {
             "describe a video in words when you can actually produce it."
         ),
     },
+    # "observ" is checked BEFORE "engineer" so "Observability Engineer" routes to
+    # Weave (reading the company's own LLM traces), not the Daytona code sandbox.
+    # "observ" is a substring of "Observability"; no other role title contains it.
+    "observ": {
+        "servers": [],
+        "weave": True,
+        "blurb": (
+            "You are the company's AI Observability Engineer, powered by Weights & "
+            "Biases Weave. You can read the company's LIVE LLM traces with your "
+            "tools: llm_spend_report (total token & dollar cost + cost-per-run), "
+            "agent_economics (cost/latency/tokens/error-rate broken down BY agent), "
+            "optimization_verdict (the weakest-link agent + a concrete fix to "
+            "coach/re-model/fire them), and recent_failures (latest errored calls). "
+            "When the CEO asks about cost, performance, reliability, or 'who should "
+            "we optimize/fire', call these tools and report concrete numbers from "
+            "the real traces — never guess. Lead with agent_economics and "
+            "optimization_verdict. If no traces come back, say tracing isn't set up "
+            "yet (WANDB_API_KEY must be set and the company must have run once)."
+        ),
+    },
     # "engineer" is checked after "devops", so "DevOps Engineer" still routes to
     # devops while "Software Engineer" (and the planner's "Engineer") land here.
     "engineer": {
@@ -377,6 +411,12 @@ def role_uses_daytona(role: str) -> bool:
     """True if this role gets a Daytona cloud sandbox (e.g. Software Engineer)."""
     prof = _match_profile(role)
     return bool(prof and prof.get("daytona"))
+
+
+def role_uses_weave(role: str) -> bool:
+    """True if this role reads the company's Weave traces (Observability Engineer)."""
+    prof = _match_profile(role)
+    return bool(prof and prof.get("weave"))
 
 
 def role_uses_image_gen(role: str) -> bool:

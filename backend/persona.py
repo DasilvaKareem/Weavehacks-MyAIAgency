@@ -22,6 +22,7 @@ OCEAN = ("openness", "conscientiousness", "extraversion", "agreeableness", "neur
 _ROLE_BASELINES: list[tuple[str, tuple[int, int, int, int, int], list[str]]] = [
     ("devops",     (60, 90, 35, 50, 15), ["reliability obsession", "calm incident response", "automation-first thinking"]),
     ("data scien", (85, 85, 40, 55, 35), ["rigorous analysis", "hypothesis-driven thinking", "healthy skepticism of data"]),
+    ("observ",     (62, 90, 42, 58, 25), ["proactive monitoring", "cost and latency vigilance", "data-backed reliability reads"]),
     ("engineer",   (70, 85, 40, 50, 35), ["systematic problem-solving", "clean abstractions", "early risk-flagging"]),
     ("designer",   (90, 65, 60, 78, 40), ["user empathy", "visual storytelling", "bold creative leaps"]),
     ("ux research",(88, 78, 55, 82, 40), ["sharp user questions", "pattern-spotting", "evidence over opinion"]),

@@ -181,6 +181,9 @@ def _cmd_chat(store: AgentStore, agent_id: str) -> int:
 
 def main(argv: list[str]) -> int:
     _load_env()
+    from .observability import init_weave
+
+    init_weave()  # trace 1:1 chats too (no-op without WANDB_API_KEY)
     store = AgentStore()
     if len(argv) == 1:
         return _cmd_list(store)
