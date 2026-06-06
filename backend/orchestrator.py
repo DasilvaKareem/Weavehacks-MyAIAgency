@@ -33,6 +33,9 @@ class AgentEvent:
 
 class Orchestrator:
     def __init__(self) -> None:
+        from .observability import init_weave
+
+        init_weave()  # turn on Weave tracing (no-op without WANDB_API_KEY)
         self._graph = build_company_graph()
         self._events: "queue.Queue[AgentEvent]" = queue.Queue()
         self._active: set = set()   # in-flight run futures, for graceful shutdown
@@ -82,14 +85,22 @@ class Orchestrator:
     # --- the run ------------------------------------------------------------
 
     async def _execute(self, goal: str) -> str:
+        import uuid
+
+        from .observability import tag
+
         report = ""
+        run_id = uuid.uuid4().hex[:12]  # one id per company run, for cost_per_goal
         try:
-            # Stream node-by-node so the game can show agents lighting up live.
-            async for update in self._graph.astream({"goal": goal}):
-                for node, payload in update.items():
-                    self._emit_for(node, payload)
-                    if node == "ceo_review" and payload.get("report"):
-                        report = payload["report"]
+            # Tag every call in this run with the goal + run id so the
+            # Observability Engineer can compute cost-per-goal and compare runs.
+            with tag(run_id=run_id, run_goal=goal, kind="company_run"):
+                # Stream node-by-node so the game can show agents lighting up live.
+                async for update in self._graph.astream({"goal": goal}):
+                    for node, payload in update.items():
+                        self._emit_for(node, payload)
+                        if node == "ceo_review" and payload.get("report"):
+                            report = payload["report"]
         except Exception as exc:
             self._events.put(AgentEvent("error", str(exc)))
             raise

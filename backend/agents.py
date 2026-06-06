@@ -11,8 +11,10 @@ import json
 import re
 
 from . import config
+from . import role_policy
 from .llm import get_llm
 from .mcp_bridge import run_tool_loop
+from .observability import tag, traced
 from .persona import generate as make_persona, render_prompt as render_persona
 from .state import CompanyState, Result, Task, WorkerState
 from .tool_builder import build_tools
@@ -72,6 +74,7 @@ Return ONLY a JSON array of at most {max_tasks} objects, each:
   {{"role": "<one of the roles>", "description": "<one specific task>"}}"""
 
 
+@traced
 async def ceo_plan(state: CompanyState) -> dict:
     goal = state["goal"]
     llm = get_llm()
@@ -109,9 +112,14 @@ worth keeping (a spec, draft, dataset, or plan) so the rest of the company can \
 build on it. Then report your concrete result in under 120 words."""
 
 
+@traced
 async def worker(state: WorkerState) -> dict:
     task: Task = state["task"]
-    llm = get_llm()
+    # Honor any optimizer-set overrides for this role (cheaper model / smaller
+    # tool budget). This is how a Weave-driven decision changes real behavior.
+    pol_model = role_policy.model(task.role)
+    llm = get_llm(model=pol_model) if pol_model else get_llm()
+    pol_steps = role_policy.max_steps(task.role)
     profile = config.role_profile(task.role)
     # Seed the persona from the assigned agent when known, else the task id, so a
     # worker's character is stable and its work reflects its strengths.
@@ -128,24 +136,29 @@ async def worker(state: WorkerState) -> dict:
     # layer (when exec is enabled), and a Daytona cloud sandbox (Software Engineer).
     tools = await build_tools(task.role, task.agent_id, task.role)
     async with _semaphore():  # the scale gate
-        try:
-            if tools:
-                output = await run_tool_loop(llm, [("human", prompt)], tools)
-            else:
-                resp = await llm.ainvoke(prompt)
-                output = _text(resp).strip()
-            result = Result(
-                task_id=task.id, role=task.role, agent_id=task.agent_id, output=output
-            )
-        except Exception as exc:  # keep one agent's failure from sinking the run
-            result = Result(
-                task_id=task.id,
-                role=task.role,
-                agent_id=task.agent_id,
-                output="",
-                status="error",
-                error=str(exc),
-            )
+        # Stamp this worker's LLM calls with its identity so Weave can attribute
+        # cost/latency/failures to the specific agent (the Observability Engineer
+        # reads these back to find who's expensive or failing).
+        with tag(role=task.role, agent_id=task.agent_id, kind="worker"):
+            try:
+                if tools:
+                    output = await run_tool_loop(
+                        llm, [("human", prompt)], tools, max_steps=pol_steps)
+                else:
+                    resp = await llm.ainvoke(prompt)
+                    output = _text(resp).strip()
+                result = Result(
+                    task_id=task.id, role=task.role, agent_id=task.agent_id, output=output
+                )
+            except Exception as exc:  # keep one agent's failure from sinking the run
+                result = Result(
+                    task_id=task.id,
+                    role=task.role,
+                    agent_id=task.agent_id,
+                    output="",
+                    status="error",
+                    error=str(exc),
+                )
     return {"results": [result]}
 
 
@@ -159,6 +172,7 @@ Results:
 Write a brief executive summary (under 150 words) of what the company achieved."""
 
 
+@traced
 async def ceo_review(state: CompanyState) -> dict:
     results = state.get("results", [])
     joined = "\n".join(
