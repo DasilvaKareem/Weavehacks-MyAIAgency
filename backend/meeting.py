@@ -25,11 +25,21 @@ from dataclasses import dataclass
 
 from . import company
 from .agents import _extract_json, _text
+from .bus_tools import load_bus_tools
+from .company_fs import load_fs_tools
 from .llm import get_llm
+from .mcp_bridge import run_tool_loop_sync
 from .persona import generate as make_persona, render_prompt as render_persona
 from .store import AgentStore
 
 CHAIR = "ceo"
+
+# Tools an agent may reach for DURING its meeting turn. Strictly read-only recall
+# so a turn stays a discussion, not a side-effecting action: it can cite prior
+# work (the shared drive) and see what teammates pinged it (its inbox), but not
+# write, delete, or broadcast — those belong in tasks/1:1s, not the meeting room.
+_MEETING_TOOL_NAMES = {"drive_read", "drive_list", "drive_search", "check_inbox"}
+_MEETING_TOOL_STEPS = 4   # cap on model<->tool round-trips per turn (keeps turns snappy)
 
 
 def _try_meeting_store():
@@ -59,6 +69,12 @@ def _name_of(sender: str, members: dict) -> str:
 def _format_transcript(lines: list[tuple[str, str]]) -> str:
     # lines: (display_name, content)
     return "\n".join(f"{who}: {content}" for who, content in lines) or "(no messages yet)"
+
+
+def _clip(text: str, n: int) -> str:
+    """Collapse whitespace and cap to `n` chars so a recap line stays compact."""
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
 
 
 class MeetingOrchestrator:
@@ -179,12 +195,78 @@ class MeetingOrchestrator:
 
     # --- one agent's turn --------------------------------------------------
 
+    def _meeting_tools(self, agent_id, row) -> list:
+        """The read-only recall tools this agent may call mid-turn (see
+        _MEETING_TOOL_NAMES): cite the shared drive, peek at its inbox. Inbox
+        tools only exist when the Redis bus is configured. Best-effort — any
+        failure yields a tool-free turn rather than aborting the meeting."""
+        try:
+            tools = load_fs_tools(author_id=agent_id, author_name=row.name)
+            tools += load_bus_tools(agent_id, row.name, row.role)  # [] without REDIS_URL
+            return [t for t in tools if t.name in _MEETING_TOOL_NAMES]
+        except Exception:
+            return []
+
+    def _memory_block(self, agent_id, row) -> str:
+        """A compact recap of THIS agent's recent work — recent 1:1s with the
+        CEO, past meetings it sat in, and files it authored on the drive — so it
+        speaks with memory instead of starting every meeting amnesiac. Each
+        lookup is independently guarded; an empty recap returns ""."""
+        parts: list[str] = []
+        try:
+            chats = self.store.history(agent_id, limit=6)
+            if chats:
+                lines = [f"  {'CEO' if m.role == 'human' else row.name}: "
+                         f"{_clip(m.content, 160)}" for m in chats]
+                parts.append("Your recent 1:1 with the CEO:\n" + "\n".join(lines))
+        except Exception:
+            pass
+        try:
+            mtgs = [m for m in self.store.list_meetings()
+                    if m.summary and agent_id in (m.members or "").split(",")][:3]
+            if mtgs:
+                lines = [f"  • {m.topic} → {_clip(m.summary, 160)}" for m in mtgs]
+                parts.append("Recent meetings you were in (topic → decision):\n"
+                             + "\n".join(lines))
+        except Exception:
+            pass
+        try:
+            mine = [f for f in self.store.fs_list() if f.author_id == agent_id]
+            mine.sort(key=lambda f: f.updated_at, reverse=True)
+            if mine:
+                lines = [f"  {f.path} [{f.kind}]" for f in mine[:8]]
+                parts.append("Files you've put on the company drive "
+                             "(read one with drive_read):\n" + "\n".join(lines))
+        except Exception:
+            pass
+        if not parts:
+            return ""
+        return ("--- YOUR RECENT WORK (draw on it; don't just recite it) ---\n"
+                + "\n\n".join(parts) + "\n--- END ---")
+
     def _speak(self, row, agent_id, topic, members, transcript) -> str:
         persona = render_persona(make_persona(agent_id, row.role))
         system = f"You are {row.name}, a {row.role} at Company.AI.\n\n{persona}"
         company_ctx = company.context_for(self.store)   # the CEO's company decisions
         if company_ctx:
             system += "\n\n" + company_ctx
+        memory = self._memory_block(agent_id, row)      # (b) recall of own recent work
+        if memory:
+            system += "\n\n" + memory
+
+        # (a) read-only recall tools, so the agent can pull up a spec or check its
+        # inbox mid-turn instead of guessing. Tailor the nudge to what it actually
+        # has — never invite it to call a tool that isn't bound.
+        tools = self._meeting_tools(agent_id, row)
+        have = {t.name for t in tools}
+        recall = []
+        if {"drive_search", "drive_read"} & have:
+            recall.append("use drive_search/drive_read to pull up a spec or past artifact")
+        if "check_inbox" in have:
+            recall.append("check_inbox for anything a teammate sent you")
+        recall_hint = (" If you need a detail you don't have, "
+                       + ", or ".join(recall) + " before you speak.") if recall else ""
+
         others = ", ".join(r.name for aid, r in members.items() if aid != agent_id)
         human = (
             f"You're in a team meeting. Topic: {topic}\n"
@@ -192,10 +274,14 @@ class MeetingOrchestrator:
             f"Transcript so far:\n{_format_transcript(transcript)}\n\n"
             "It's your turn. Give your take in 2-4 sentences, fully in character. "
             "Build on what others said and add your role's perspective; push toward "
-            "a decision. Don't repeat points already made, and don't narrate stage "
-            "directions — just speak."
+            f"a decision.{recall_hint} Don't repeat points already made, and don't "
+            "narrate stage directions — just speak."
         )
-        return _text(self.llm.invoke([("system", system), ("human", human)])).strip()
+        msgs = [("system", system), ("human", human)]
+        if tools:
+            return run_tool_loop_sync(self.llm, msgs, tools,
+                                      max_steps=_MEETING_TOOL_STEPS).strip()
+        return _text(self.llm.invoke(msgs)).strip()
 
     # --- CEO close ---------------------------------------------------------
 

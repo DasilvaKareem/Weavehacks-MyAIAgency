@@ -62,6 +62,11 @@ class CompanyLink:
         self._tokens: dict[str, queue.Queue] = {}
         self._plans: dict[str, concurrent.futures.Future] = {}
         self._composio: dict[str, concurrent.futures.Future] = {}
+        # Single worker for the LLM grant board (one application reviewed at a time).
+        self._grant_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="grant-judge"
+        )
+        self._grant: concurrent.futures.Future | None = None
 
     # --- persistence -------------------------------------------------------
 
@@ -278,6 +283,28 @@ class CompanyLink:
         except Exception:
             return None
 
+    # --- grant board (LLM-judged, non-blocking) ---------------------------
+
+    def request_grant(self, application: str, company: dict) -> bool:
+        """Submit a grant application to the LLM review board (off-thread). False if
+        one is already under review."""
+        if self._grant is not None and not self._grant.done():
+            return False
+        from backend.grants import judge_grant
+        self._grant = self._grant_pool.submit(judge_grant, application, dict(company or {}))
+        return True
+
+    def poll_grant(self) -> dict | None:
+        """Return the verdict dict once the board has decided, else None."""
+        if self._grant is None or not self._grant.done():
+            return None
+        fut, self._grant = self._grant, None
+        try:
+            return fut.result()
+        except Exception:
+            return {"approved": False, "amount": 0, "program": "Small Business Grant",
+                    "feedback": "The board couldn't process your application. Try again."}
+
     # --- Composio connections (in-game OAuth) -----------------------------
 
     def request_composio_status(self, agent_id: str, toolkits) -> bool:
@@ -324,6 +351,7 @@ class CompanyLink:
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._plan_pool.shutdown(wait=False, cancel_futures=True)
         self._composio_pool.shutdown(wait=False, cancel_futures=True)
+        self._grant_pool.shutdown(wait=False, cancel_futures=True)
         # Tear down any Daytona sandbox a Software Engineer agent spun up.
         try:
             from backend.daytona_tools import shutdown as daytona_shutdown

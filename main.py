@@ -12,6 +12,7 @@ from __future__ import annotations
 import faulthandler
 import json
 import math
+import queue
 import random
 import re
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, tasks, dialogue
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, tasks, dialogue, voice
 from game import park as parkmod
 from game.park import Park, load_lots as load_park
 from game.shop import ShopPanel, load_catalog
@@ -38,6 +39,7 @@ from game.dossier_panel import DossierPanel
 from game.investor_panel import InvestorPanel
 from game import market as market_mod
 from game.market_panel import MarketPanel
+from game.grant_panel import GrantPanel
 from game.prologue import Prologue
 from game.menu import MainMenu
 from game.company_link import CompanyLink
@@ -122,6 +124,7 @@ class Game:
         # me") to walk with you — trailing you through the office AND out in the park.
         # Toggled from the phone; the per-frame trailing lives in _update_companion.
         self.robin_following = False
+        self._robin_voice = voice.pick_voice(COFOUNDER_NAME)   # he acks the toggle aloud
         # Your first intern: hangs out in a city park (Founders Green) with a "!"
         # overhead. Walk up + E in the park to take them on — they join the company
         # for free. Positioned/bound to its park in _enter_park; gated on the
@@ -176,6 +179,7 @@ class Game:
         self.investor = InvestorPanel()    # pitch the VC for a funding round
         self.market = market_mod.Market.load(self.link)   # idle stock-market state
         self.market_panel = MarketPanel()  # bank/broker trading terminal
+        self.grant_panel = GrantPanel()    # Grants Office: LLM-judged funding
         self.chat = ChatPanel(self.link)
         self.shop = ShopPanel(load_catalog())
         self.hire_catalog = load_agents()          # marketplace models for the phone Hire app
@@ -189,6 +193,20 @@ class Game:
         # agent/NPC messages; landed background replies are posted in the loop.
         self.inbox = Inbox()
         self.inbox_feeder = InboxFeeder()
+        # Task firehose: the phone's Tasks app enqueues; this in-game Dispatcher
+        # pulls tasks off the Redis queue and runs them on idle agents (cap-bounded),
+        # posting each result to the inbox. Results land on a thread-safe queue and
+        # are drained in the game loop (_reconcile_busy_agents) to stay off-thread.
+        self._task_results: "queue.Queue" = queue.Queue()
+        self._dispatcher = None
+        try:
+            from backend import task_queue as _task_queue
+            self._dispatcher = _task_queue.Dispatcher(
+                store=self.link.store,
+                on_result=lambda t, r, a: self._task_results.put((t, r, a)))
+            self._dispatcher.start()
+        except Exception as exc:   # no Redis / backend issue — Tasks app degrades gracefully
+            print(f"[task firehose] dispatcher not started: {exc}")
         # The Nokia command center: text the co-founder or any agent, read the
         # inbox, hire from the marketplace (the Upwork-style Hire app). Contacts are
         # the whole roster (any room). The hire bridge hands the phone just the few
@@ -210,9 +228,18 @@ class Game:
             is_following=lambda: self.robin_following,
             set_following=self._set_robin_following,
         )
+        # City map: the phone projects these world POIs onto its LCD. `here` is the
+        # "you are here" pin (your park position in the city, or the building you're
+        # standing in when you're indoors).
+        citymap_bridge = SimpleNamespace(
+            here=self._map_here,
+            bounds=lambda: self.park.bounds,
+            markers=self._map_markers,
+        )
         self.phone = PhonePanel(self.link, self.coordinator,
                                 lambda: self.all_agents, self.inbox, self.taskboard,
-                                hire=hire_bridge, follow=follow_bridge)
+                                hire=hire_bridge, follow=follow_bridge,
+                                citymap=citymap_bridge)
         self.inbox.post("Company.AI",
                         "Welcome! Your team and the neighborhood reach you here. "
                         "Open the phone (N) and tap a message to read it.",
@@ -906,14 +933,22 @@ class Game:
         elif kind == "door_paint":
             self.scene.set_door_color(item["color"])
         else:
-            ceo = self.player.ch
-            yaw = math.radians(ceo.yaw)
-            x = ceo.x + math.sin(yaw) * 1.7        # a step in front of the player
-            z = ceo.z + math.cos(yaw) * 1.7
+            self._buy_seq += 1
+            if self.mode == "park":
+                # Bought at Bolt Hardware in the city → delivered near your office's
+                # entrance (the CEO is out in the park, not standing in the office).
+                ent = self.plan.point("entrance") or \
+                    self.plan.grid_to_world(self.plan.cols / 2.0, self.plan.rows - 2)
+                x = ent[0] + ((self._buy_seq % 5) - 2) * 0.8   # fan out so they don't stack
+                z = ent[1]
+            else:
+                ceo = self.player.ch
+                yaw = math.radians(ceo.yaw)
+                x = ceo.x + math.sin(yaw) * 1.7    # a step in front of the player
+                z = ceo.z + math.cos(yaw) * 1.7
             hx = config.GRID_COLS * config.TILE / 2.0 - 0.8
             hz = config.GRID_ROWS * config.TILE / 2.0 - 0.8
             x, z = max(-hx, min(hx, x)), max(-hz, min(hz, z))
-            self._buy_seq += 1
             rng = random.Random(config.FURNITURE_SEED * 31 + self._buy_seq)
             self.scene.add_prop(furniture.build(kind, rng, x, z, item.get("params")))
             self._rebuild_nav()   # new prop becomes an obstacle for pathfinding
@@ -961,10 +996,16 @@ class Game:
     def _set_robin_following(self, on: bool) -> None:
         """Phone-driven toggle for Robin trailing the CEO. Switching it on drops
         him in beside you wherever you're standing (office or park) so he never has
-        to sprint across the map to catch up."""
-        self.robin_following = bool(on)
-        if self.robin_following:
+        to sprint across the map to catch up. He acks the change aloud (in his own
+        voice), but only on a real state change so re-tapping the same row is quiet."""
+        on = bool(on)
+        changed = on != self.robin_following
+        self.robin_following = on
+        if on:
             self._snap_robin_to_ceo()
+        if changed:
+            line = "On my way — right behind you." if on else "Got it, I'll wait here."
+            voice.speak(line, self._robin_voice)
 
     def _snap_robin_to_ceo(self) -> None:
         """Place Robin a step behind/beside the CEO. Used when follow turns on and
@@ -997,6 +1038,55 @@ class Game:
             locomotion.face_dir(robin, dx, dz, dt)
             locomotion.apply_anim(robin, moving=False)
         robin.update(dt, self.registry)
+
+    # -- phone city map (data; the phone draws it) ----------------------------
+    def _map_here(self):
+        """The 'you are here' pin: your live park position (with facing) when you're
+        outside, or the building you're standing in when you're indoors (office
+        coords don't map onto the city, so we pin the building instead)."""
+        if self.mode == "park":
+            p = self.player.ch
+            return (p.x, p.z, p.yaw, True)        # True = draw a facing arrow
+        b = self.current_building
+        if b is not None:
+            return (b.x, b.z, 0.0, False)         # inside this building
+        return None
+
+    def _map_markers(self) -> list[dict]:
+        """Every city POI for the phone map: your offices, lease lots, shops, quest
+        stops, storefronts, the bank/broker, parks — plus Robin and the intern when
+        they're out in the world. Each is world (x,z) + colour + label + kind."""
+        out: list[dict] = []
+        for b in self.park.buildings:
+            leased = b.status != "available"
+            if b.status == "hq":
+                col, kind = (255, 214, 110), "hq"
+            elif leased:
+                col, kind = tuple(b.color), "office"
+            else:
+                col, kind = (235, 150, 70), "lease"
+            label = b.name if leased else f"{b.name} — lease ${b.deposit:,}"
+            out.append({"x": b.x, "z": b.z, "color": col, "label": label, "kind": kind})
+        for n in self.park.npc:
+            if n.market:
+                col, kind = (240, 200, 90), "bank"
+            elif n.store:
+                col, kind = (190, 130, 230), "store"
+            elif n.task or n.tasks:
+                col, kind = (90, 210, 230), "quest"
+            else:
+                col, kind = (200, 205, 215), "shop"
+            out.append({"x": n.x, "z": n.z, "color": col, "label": n.name, "kind": kind})
+        for g in self.park.parks:
+            out.append({"x": g.x, "z": g.z, "color": (120, 200, 120),
+                        "label": g.name, "kind": "park"})
+        if self.robin_following:
+            out.append({"x": self.robin.x, "z": self.robin.z, "color": (90, 230, 245),
+                        "label": f"{COFOUNDER_NAME} (with you)", "kind": "robin"})
+        if self._intern_park is not None and not self.taskboard.is_done("intern"):
+            out.append({"x": self.intern.x, "z": self.intern.z, "color": (150, 230, 150),
+                        "label": "Eager Intern", "kind": "intern"})
+        return out
 
     # -- office park ----------------------------------------------------------
     def _enter_park(self) -> None:
@@ -1135,15 +1225,17 @@ class Game:
         self._e_cooldown = 3                   # don't let the entering E talk immediately
 
     _STORE_ACTOR = {"outfit": "Tailor", "hire": "Recruiter"}
+    _SERVICE_ACTOR = {"grant": "Grants Officer"}
 
     def _spawn_quest_actor(self, npc) -> None:
         """Place one NPC inside the building to talk to — Robin for the cafe, a
-        shopkeeper for a store, else a clerk named after the beat's speaker."""
+        shopkeeper for a store, a clerk for a service, else named after the beat."""
         keys = npc.pending(self.taskboard.done) or list(npc.task_keys())
         key = keys[0] if keys else ""
         lines = dialogue.lines_for(self.dialogue, key)
-        name = (self._STORE_ACTOR.get(npc.store) if npc.is_store
-                else (lines[0].who if lines else "")) or npc.name
+        name = ((self._STORE_ACTOR.get(npc.store) if npc.is_store else None)
+                or (self._SERVICE_ACTOR.get(npc.service) if npc.is_service else None)
+                or (lines[0].who if lines else "")) or npc.name
         cx, cz = self.plan.grid_to_world(self.plan.cols / 2.0 - 0.5, 2.0)
         if npc.task == "cofounder":            # the cafe: it's Robin in person
             actor = self.robin
@@ -1173,6 +1265,8 @@ class Game:
             text = "Press  E  to change your outfit"
         elif b is not None and b.store == "hire":
             text = "Press  E  to hire agents"
+        elif b is not None and b.service == "grant":
+            text = "Press  E  to apply for a grant"
         else:
             text = f"Press  E  to talk to {name}"
         tw = pr.measure_text(text, 20)
@@ -1194,6 +1288,9 @@ class Game:
         if self.market_panel.open:               # bank/broker: the trading terminal
             self._do_market_action(self.market_panel.draw(self.market, self.cash))
             return
+        if self.grant_panel.open:                # Grants Office: LLM-judged funding
+            self._drive_grant_panel()
+            return
         if self._quest_input is not None:        # mid-conversation: the modal handles it
             self._draw_quest_input()
             return
@@ -1203,6 +1300,31 @@ class Game:
             portal = self._nearest_portal()
             if portal is not None:
                 self._draw_portal_prompt(portal)
+
+    def _drive_grant_panel(self) -> None:
+        """Draw the Grants Office panel and drive its async LLM review: submit kicks
+        off the off-thread judge; while reviewing we poll; a verdict pays any award
+        and posts the result. The board's decision is the LLM's, not scripted."""
+        action = self.grant_panel.draw()
+        if action and action[0] == "submit":
+            if self.link.request_grant(action[1], self.company):
+                self.grant_panel.set_reviewing()
+        elif self.grant_panel.state == "reviewing":
+            verdict = self.link.poll_grant()
+            if verdict is not None:
+                if verdict.get("approved") and verdict.get("amount", 0) > 0:
+                    self.cash += int(verdict["amount"])
+                    self.inbox.post(
+                        "Grants Office",
+                        f"Approved — {verdict.get('program', 'grant')} for "
+                        f"${int(verdict['amount']):,}. {verdict.get('feedback', '')}",
+                        kind="system", subject="✓ Grant approved", ts=pr.get_time())
+                else:
+                    self.inbox.post(
+                        "Grants Office",
+                        f"Application declined. {verdict.get('feedback', '')}",
+                        kind="system", subject="Grant declined", ts=pr.get_time())
+                self.grant_panel.set_result(verdict)
 
     def _visit_quest_stop(self, npc) -> None:
         """Talk to a quest building's NPC. Picks its next unfinished to-do (a
@@ -1221,8 +1343,19 @@ class Game:
             self.market_panel.open_panel(npc.market)
             self._e_cooldown = 8
             return
+        if getattr(npc, "service", None) == "grant":   # the Grants Office: LLM-judged funding
+            self.grant_panel.open_panel()
+            self._e_cooldown = 8
+            return
         pending = npc.pending(self.taskboard.done)
         if not pending:
+            # A lore-only stop (e.g. the city guide) stays open to chat on later
+            # visits — replay its talk, with no second reward (complete() no-ops).
+            key = npc.task
+            t = tasks.TASK_BY_KEY.get(key) if key else None
+            if key and key in self.dialogue and not (t and t.ask):
+                self._open_quest_task(npc, key)
+                return
             self.inbox.post(npc.name, "Already taken care of — nothing else to do here.",
                             kind="system", subject=npc.name, ts=pr.get_time())
             self._e_cooldown = 8
@@ -1230,13 +1363,20 @@ class Game:
         self._open_quest_task(npc, pending[0])
 
     def _open_quest_task(self, npc, key: str) -> None:
-        """Begin one of a quest stop's to-dos: capture text if it asks, else finish it."""
+        """Begin one of a quest stop's to-dos: capture text if it asks, play a
+        dialogue-only beat (then complete) if it just has lines, else finish it."""
         task = tasks.TASK_BY_KEY.get(key)
         if task is not None and task.ask and task.field:
             self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
             self._quest_line, self._quest_action = 0, None  # start at the beat's first line
             self._e_cooldown = 4                           # don't let the opening E skip line 1
             while pr.get_char_pressed() > 0:               # drop the 'e' that opened it
+                pass
+        elif key in self.dialogue:        # lore-only stop (e.g. the city guide): play, then complete
+            self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
+            self._quest_line, self._quest_action = 0, "complete"
+            self._e_cooldown = 4
+            while pr.get_char_pressed() > 0:
                 pass
         else:
             self._complete_quest_stop(npc, key)
@@ -1336,6 +1476,8 @@ class Game:
                 nextlabel = "to change your outfit"
             elif self._quest_action == "hire":
                 nextlabel = "to hire"
+            elif self._quest_action == "complete":
+                nextlabel = "to wrap up"
             else:
                 nextlabel = "to answer"
             pr.draw_text(f"Press  E  {nextlabel}{dots}", x + 20, y + h - 30, 16,
@@ -1345,13 +1487,15 @@ class Game:
                        or pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
                        or gamepad.pressed(gamepad.CROSS) or gamepad.pressed(gamepad.TRIANGLE))
             if advance and self._e_cooldown == 0:
-                if is_last and self._quest_action is not None:   # store: open the shop
+                if is_last and self._quest_action is not None:   # store: open shop; lore: finish
                     action = self._quest_action
                     self._close_quest_input()
                     if action == "outfit":
                         self._open_outfitter()
                     elif action == "hire":
                         self._open_hire_store()
+                    elif action == "complete":           # lore-only stop → tick the to-do + reward
+                        self._complete_quest_stop(npc, key)
                     return
                 self._quest_line += 1
                 self._e_cooldown = 3            # debounce so one press = one step
@@ -1401,7 +1545,8 @@ class Game:
         # Freeze the world while a quest text field, the dossier, the phone, or
         # an investor meeting is open.
         frozen = (self._quest_input is not None
-                  or self.dossier.open or self.investor.open or self.phone.open)
+                  or self.dossier.open or self.investor.open or self.phone.open
+                  or self.shop.open)
         if self.phone.open:                    # the Nokia works out in the city too
             self.phone.update()
         # Your first intern waits in a park until taken on (the "intern" quest).
@@ -1438,8 +1583,15 @@ class Game:
                     self.cash -= near.deposit
                     self.park.lease(near)        # capacity rises via max_desks
             elif near_npc is not None and press_e:
-                # Every interactive building — quest stop OR storefront — is entered;
-                # inside, talk to the NPC (E) to do the quest / open the shop.
+                if near_npc.store == "shop":
+                    # The furniture shop applies to your OFFICE (the active scene in
+                    # park mode), so open it right here instead of entering — entering
+                    # would repurpose the scene and the decor would land in the store.
+                    self.shop.open_()
+                    self._e_cooldown = 8
+                    return
+                # Every other interactive building — quest stop OR storefront — is
+                # entered; inside, talk to the NPC (E) to do the quest / open the shop.
                 self._enter_quest_building(near_npc); return
             elif intern_near and press_e:        # the park intern → take them on (free)
                 self._take_on_intern()
@@ -1459,10 +1611,17 @@ class Game:
         ceo.draw(self.registry)
         pr.end_mode_3d()
         self._draw_park_overlay(near, near_npc)
+        self._draw_companion_chip()
         if self._quest_input is not None:        # quest-stop decision capture, on top
             self._draw_quest_input()
         self._do_dossier_action(self.dossier.draw(self.company))
         self._do_investor_action(self.investor.draw(self.company, self._rounds_raised()))
+        if self.shop.open:                     # Bolt Hardware: furnish your office from the city
+            action = self.shop.draw(self.cash)
+            if action == "close":
+                self.shop.close()
+            elif isinstance(action, tuple) and action[0] == "buy":
+                self.buy_item(action[1])
         if self.phone.open:                    # Nokia overlay, on top of the city
             self.phone.draw()
         pr.end_drawing()
@@ -1496,6 +1655,17 @@ class Game:
         x = config.WINDOW_WIDTH // 2 - w // 2
         pr.draw_rectangle(x - 12, 12, w + 24, 30, pr.Color(20, 24, 34, 200))
         pr.draw_text(label, x, 16, 20, pr.Color(235, 220, 170, 255))
+
+    def _draw_companion_chip(self) -> None:
+        """Top-center chip confirming Robin is walking with you (office + park),
+        with the reminder of how to call it off. Hidden when he's not following."""
+        if not self.robin_following:
+            return
+        label = f"{COFOUNDER_NAME} is following  ·  Nokia ▸ Co-founder to stop"
+        w = pr.measure_text(label, 16)
+        x = config.WINDOW_WIDTH // 2 - w // 2
+        pr.draw_rectangle(x - 10, 46, w + 20, 26, pr.Color(28, 86, 104, 210))
+        pr.draw_text(label, x, 50, 16, pr.Color(190, 235, 245, 255))
 
     def _draw_park_overlay(self, near, near_npc=None) -> None:
         ceo = self.player.ch
@@ -1535,7 +1705,9 @@ class Game:
                     sub = f"TO-DO: {task.title}" if task else "Press E"
                     sub_col = pr.Color(120, 215, 235, 255)
             elif n.is_store:
-                sub = "Press E: hire talent" if n.store == "hire" else "Press E: change your outfit"
+                sub = {"hire": "Press E: hire talent",
+                       "shop": "Press E: furnish your office"}.get(
+                           n.store, "Press E: change your outfit")
                 sub_col = pr.Color(210, 175, 235, 255)
             self._label_3d(n.name, sub, sub_col, n.x, min(self.park.top_of(n), 6.0), n.z, 14,
                            main_color=pr.Color(240, 226, 180, 255))
@@ -1582,7 +1754,8 @@ class Game:
                 prompt = f"Press  E  to lease {near.name}   -   Deposit ${near.deposit:,}  ·  Rent ${near.rent:,}/mo"
                 afford = self.cash >= near.deposit
         elif near_npc is not None and near_npc.is_store:
-            verb = "hire agents" if near_npc.store == "hire" else "change your outfit"
+            verb = {"hire": "hire agents", "shop": "furnish your office"}.get(
+                near_npc.store, "change your outfit")
             prompt = f"Press  E  at {near_npc.name}  to {verb}"
         elif near_npc is not None:
             pending = near_npc.pending(self.taskboard.done)
@@ -1702,13 +1875,15 @@ class Game:
             # The to-do list lives only on the phone now (N → To-Do) — no L panel.
             # C toggles the Company Dossier (view/edit the decisions agents read).
             if pr.is_key_pressed(pr.KEY_C) and not self.chat.open \
-                    and not self.dossier.capturing and not self.market_panel.open:
+                    and not self.dossier.capturing and not self.market_panel.open \
+                    and not self.grant_panel.open:
                 self.dossier.toggle()
             # N toggles the Nokia phone from anywhere (office OR city) — press again to
             # close. Skipped while a text field owns the keyboard (incl. the phone's own
             # message screens, where N should type a letter, not slam the phone shut).
             if pr.is_key_pressed(pr.KEY_N) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
+                    and not self.grant_panel.open \
                     and not self.phone.capturing and self._quest_input is None:
                 if self.phone.open:
                     self.phone.close()
@@ -1732,7 +1907,8 @@ class Game:
                 self.jobs.update()
             elif self.elevator_open or self.shop.open:
                 pass  # the modal handles its own input inside draw()
-            elif self.dossier.open or self.investor.open or self.market_panel.open:
+            elif (self.dossier.open or self.investor.open or self.market_panel.open
+                  or self.grant_panel.open):
                 pass  # a full-screen panel is up; it's modal — freeze movement/keys
             elif self._quest_input is not None:
                 pass  # talking to a quest NPC; the dialogue modal owns the keyboard
@@ -1819,6 +1995,7 @@ class Game:
             self._draw_meeting_badges()
             self._draw_bubbles()
             self._draw_clock()
+            self._draw_companion_chip()
 
             if self.chat.open:
                 self.chat.draw()
@@ -1872,6 +2049,8 @@ class Game:
         self.chat.voice.shutdown()
         self.meeting_link.shutdown()
         self.coordinator.shutdown()
+        if self._dispatcher is not None:
+            self._dispatcher.stop()
         self.link.shutdown()
         self.park.unload()
         self.registry.unload_all()
@@ -1900,6 +2079,18 @@ class Game:
                     self.inbox.post(a.name, reply, kind="agent",
                                     subject=f"Finished: {_inbox_short(reply, 26)}",
                                     agent_id=a.backend_id, ts=pr.get_time())
+        # Drain finished firehose tasks (posted from the Dispatcher's worker threads)
+        # into the inbox here, on the render thread.
+        while True:
+            try:
+                task, result, agent = self._task_results.get_nowait()
+            except queue.Empty:
+                break
+            who = agent.name if agent is not None else "Team"
+            self.inbox.post(who, result, kind="agent",
+                            subject=f"Task: {_inbox_short(str(task.get('text', '')), 24)}",
+                            agent_id=(agent.id if agent is not None else None),
+                            ts=pr.get_time())
 
     def _draw_agent_status(self) -> None:
         """Float a 'working…' badge above any agent currently busy on a reply."""

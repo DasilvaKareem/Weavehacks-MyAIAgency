@@ -1,6 +1,18 @@
 {
   "_comment": "Data-driven NPC dialogue for story beats. Each beat is keyed by a tasks.py task key and plays at that quest stop before the player fills in the task's `ask`. `who` is the default speaker (omit to use the building's name); `lines` is an ordered list shown one at a time (press E to continue) — the LAST line shows with the input box. A line may be a plain string or {\"who\",\"text\"} to switch speaker mid-scene. Add a story beat = add an entry here (no code).",
   "beats": {
+    "city_tour": {
+      "who": "City Guide",
+      "lines": [
+        "Welcome to Fresh Market — and welcome to the city! New around here? Let me give you the lay of the land.",
+        "Downtown's the heart of it. Those office buildings you can lease are your future HQ and team wings — grab one when you're ready to put people to work.",
+        "The civic buildings sort out your founding paperwork: the Chamber of Commerce, the Registrar, the Bureau, the Sign Shop, the Brand Studio — each one helps you nail down a piece of your company.",
+        "Need a plan? The Startup Incubator runs the Business Model Canvas workshop. Need money? Start with the Angel Investor for a seed check, then graduate to Apex Ventures for the bigger rounds. First City Bank helps you set pricing.",
+        "For people, TalentWorks staffs up your team, and The Outfitters will restyle you head to toe. And the Bean Scene Cafe? That's where you win over Robin — your future co-founder.",
+        "One more tip: pull out your phone any time (press N) to hire, check your to-do list, or message your team from anywhere. Now go build something — good luck out there!"
+      ]
+    },
+
     "cofounder": {
       "who": "Robin",
       "lines": [

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pipecat-context-hub": {
+      "command": "/Users/owner/code/Company.AI/pipecat-context-hub/.venv/bin/pipecat-context-hub",
+      "args": ["serve"],
+      "env": {}
+    }
+  }
+}

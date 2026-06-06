@@ -58,6 +58,7 @@ def _team(n: int) -> Callable[[dict], bool]:
 # Ordered quest line. Chapters are just headings; order is the list order.
 TASKS: list[Task] = [
     # --- Chapter 1: The Idea -------------------------------------------------
+    Task("city_tour",   "The Idea", "Get to know the city",     "Visit Fresh Market and chat with the city guide.",),
     Task("name",        "The Idea", "Name your company",        "Every empire needs a name.",
          ask="What's the company called?", field="company_name", reward=500),
     Task("pitch",       "The Idea", "Write your one-line pitch", "What do you do, in a sentence?",

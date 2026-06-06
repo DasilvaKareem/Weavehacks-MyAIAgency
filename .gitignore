@@ -22,3 +22,6 @@ company_role_policy.json
 
 # Per-company workspaces (dbs + per-company data, not source)
 workspaces/
+
+# Pipecat Context Hub — cloned MCP server (not our source); built index lives in ~/.pipecat-context-hub
+pipecat-context-hub/

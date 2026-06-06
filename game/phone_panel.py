@@ -14,17 +14,25 @@ never blocking the render loop.
 """
 from __future__ import annotations
 
+import math
+
 import pyray as pr
 
 from . import gamepad, voice, tasks, roster, config
 from .chat_panel import _wrap
 from .coordinator_link import COFOUNDER_NAME
 from backend.config import GEMINI_MODEL  # noqa: F401  (kept for parity / future use)
+try:
+    from backend import task_queue       # fire-and-forget firehose (Redis)
+except Exception:                          # pragma: no cover - degrade if backend absent
+    task_queue = None
 
 # Screens (a tiny state machine).
 HOME, COFOUNDER, CONTACTS, AGENT, CALL = "home", "cofounder", "contacts", "agent", "call"
 INBOX, MESSAGE, TODO = "inbox", "message", "todo"
 CF_MENU = "cf_menu"          # co-founder hub: Follow me / Wait here / Send message
+MAP = "map"                  # city map: POIs + "you are here"
+TASKS = "tasks"              # fire tasks to the team queue (idle agents pick them up)
 HIRE, HIRE_ROLE = "hire", "hire_role"        # the hiring app: candidate card → role grid
 
 # Phone body geometry (centred on screen each frame). The whole phone is drawn at
@@ -59,15 +67,19 @@ def _short(text: str, n: int = 40) -> str:
 
 class PhonePanel:
     def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None,
-                 hire=None) -> None:
+                 hire=None, follow=None, citymap=None) -> None:
         self.link = link                  # CompanyLink (agent 1:1 chat)
         self.coord = coordinator          # CoordinatorLink (co-founder)
         self._contacts = contacts_getter  # () -> list[Character]
         self.inbox = inbox                # Inbox: messages that come TO the CEO
         self.board = taskboard            # tasks.TaskBoard (the To-Do app), optional
         self.hire = hire                  # hire bridge (new_candidate/departments/hire), optional
+        self.follow = follow              # co-founder follow bridge (is_following/set_following), optional
+        self.citymap = citymap            # city-map bridge (here/bounds/markers), optional
+        self._map_sel = 0                 # selected POI index on the MAP screen
         self._cand = None                 # the auto-generated candidate awaiting a role
         self._hire_flash = ""             # transient "Office full" / "Hired!" message
+        self._task_flash = ""             # transient "Fired ✓" note on the Tasks screen
         self._home_msg = ""               # transient note on the home screen (locked feature)
         self.open = False
         self.screen = HOME
@@ -186,7 +198,7 @@ class PhonePanel:
     def capturing(self) -> bool:
         """True on the message-composing screens, where the keyboard types into the
         text field — so the game must NOT treat keys like N as a close toggle here."""
-        return self.open and self.screen in (COFOUNDER, AGENT)
+        return self.open and self.screen in (COFOUNDER, AGENT, TASKS)
 
     # --- geometry (shared by update + draw) -------------------------------
 
@@ -255,6 +267,10 @@ class PhonePanel:
 
         if self.screen == HOME:
             self._update_home()
+        elif self.screen == CF_MENU:
+            self._update_cf_menu()
+        elif self.screen == MAP:
+            self._update_map()
         elif self.screen == HIRE:
             self._update_hire()
         elif self.screen == HIRE_ROLE:
@@ -267,6 +283,8 @@ class PhonePanel:
             self._update_message()
         elif self.screen == CONTACTS:
             self._update_contacts()
+        elif self.screen == TASKS:
+            self._update_tasks()
         elif self.screen == COFOUNDER:
             self._update_thread(is_cofounder=True)
         elif self.screen == AGENT:
@@ -298,7 +316,7 @@ class PhonePanel:
                 or self._softkey_clicked(self._sk_right_rect))
 
     def _update_home(self) -> None:
-        items = 6
+        items = 8
         self._nav(items)
         # Mouse: click a row to pick it.
         ys, rh, lx, lw = self._rows(items)
@@ -323,15 +341,175 @@ class PhonePanel:
                 self._home_msg = (f"You haven't won {COFOUNDER_NAME} over yet — "
                                   "pitch them at the Bean Scene Cafe.")
                 return
-            self.screen, self._scroll, self.input = COFOUNDER, 0, ""
+            if self.follow is not None:          # co-founder hub: follow toggle + message
+                self.screen, self.sel = CF_MENU, 0
+            else:
+                self.screen, self._scroll, self.input = COFOUNDER, 0, ""
         elif self.sel == 2:
             self.screen, self.sel, self._scroll, self._list_top = CONTACTS, 0, 0, 0
         elif self.sel == 3:
             self._enter_hire()
         elif self.sel == 4:
             self.screen, self.sel, self._list_top = TODO, 0, 0
+        elif self.sel == 5:
+            self.screen, self._map_sel = MAP, 0
+        elif self.sel == 6:
+            self.screen, self.input, self._task_flash = TASKS, "", ""
         else:
             self.close()
+
+    # --- co-founder hub (follow toggle + open the text thread) -------------
+
+    def _cf_menu_items(self) -> list[tuple[str, str]]:
+        following = bool(self.follow and self.follow.is_following())
+        return [("Follow me", "● walking with you" if following else "walk with you"),
+                ("Wait here", "● staying put" if not following else "stay put"),
+                ("Send message", f"text {COFOUNDER_NAME}")]
+
+    def _update_cf_menu(self) -> None:
+        items = self._cf_menu_items()
+        self._nav(len(items))
+        ys, rh, lx, lw = self._rows(len(items))
+        m = self._mouse()
+        clicked = pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
+        for i, ry in enumerate(ys):
+            if clicked and pr.check_collision_point_rec(m, pr.Rectangle(lx, ry, lw, rh)):
+                self.sel = i
+                self._activate_cf_menu()
+                return
+        if self._enter():
+            self._activate_cf_menu()
+        elif self._back():
+            self.screen, self.sel = HOME, 1
+
+    def _activate_cf_menu(self) -> None:
+        if self.sel == 0 and self.follow is not None:
+            self.follow.set_following(True)
+        elif self.sel == 1 and self.follow is not None:
+            self.follow.set_following(False)
+        elif self.sel == 2:
+            self.screen, self._scroll, self.input = COFOUNDER, 0, ""
+
+    def _draw_cf_menu(self, lx, ly, lw, lh) -> None:
+        self._draw_status_strip(lx, ly, lw, COFOUNDER_NAME)
+        items = self._cf_menu_items()
+        ys, rh, _, _ = self._rows(len(items))
+        for i, (label, hint) in enumerate(items):
+            self._draw_row(lx, ys[i], lw, rh, label, hint, i == self.sel)
+        following = bool(self.follow and self.follow.is_following())
+        status = f"{COFOUNDER_NAME} is " + ("following you." if following else "waiting.")
+        pr.draw_text(status, lx + 6, ys[-1] + rh + 8, 13, INK_DIM)
+
+    # --- city map (a top-down minimap of every POI) ------------------------
+
+    def _map_ext(self) -> float:
+        b = self.citymap.bounds() if self.citymap else None
+        return max(b[0], b[1]) if b else 152.0
+
+    def _map_rect(self, lx, ly, lw, lh):
+        """The square plotting area inside the LCD, below the status strip and above
+        the selected-POI readout. Returns (mx, my, ms)."""
+        top = ly + 24
+        bottom = ly + lh - 38
+        ms = min(lw - 12, bottom - top)
+        return lx + (lw - ms) // 2, top, ms
+
+    def _map_project(self, x, z, mx, my, ms, ext):
+        """World (x,z) → screen, with +z up the map. Pins off the grid clamp to the
+        frame edge so they still show."""
+        sx = mx + (x + ext) / (2 * ext) * ms
+        sy = my + (ext - z) / (2 * ext) * ms
+        return (max(mx + 2, min(mx + ms - 2, sx)),
+                max(my + 2, min(my + ms - 2, sy)))
+
+    @staticmethod
+    def _compass(dx, dz) -> str:
+        if abs(dx) < 1e-6 and abs(dz) < 1e-6:
+            return "here"
+        ang = math.degrees(math.atan2(dx, dz)) % 360.0    # 0=N(+z), 90=E(+x)
+        return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((ang + 22.5) // 45) % 8]
+
+    def _update_map(self) -> None:
+        if self.citymap is None or self._back():
+            self.screen, self.sel = HOME, 5
+            return
+        markers = self.citymap.markers()
+        n = len(markers)
+        if n == 0:
+            return
+        if (pr.is_key_pressed(pr.KEY_DOWN) or pr.is_key_pressed(pr.KEY_RIGHT)
+                or gamepad.pressed(gamepad.DPAD_DOWN) or gamepad.pressed(gamepad.DPAD_RIGHT)):
+            self._map_sel = (self._map_sel + 1) % n
+        if (pr.is_key_pressed(pr.KEY_UP) or pr.is_key_pressed(pr.KEY_LEFT)
+                or gamepad.pressed(gamepad.DPAD_UP) or gamepad.pressed(gamepad.DPAD_LEFT)):
+            self._map_sel = (self._map_sel - 1) % n
+        self._map_sel = min(self._map_sel, n - 1)
+        # Click a pin to select it (nearest within a small radius).
+        if pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT):
+            _, _, lx, ly, lw, lh = self._geom()
+            mx, my, ms = self._map_rect(lx, ly, lw, lh)
+            ext = self._map_ext()
+            m = self._mouse()
+            best, best_d = -1, 14.0
+            for i, mk in enumerate(markers):
+                sx, sy = self._map_project(mk["x"], mk["z"], mx, my, ms, ext)
+                d = math.hypot(sx - m.x, sy - m.y)
+                if d < best_d:
+                    best, best_d = i, d
+            if best >= 0:
+                self._map_sel = best
+
+    def _draw_map(self, lx, ly, lw, lh) -> None:
+        self._draw_status_strip(lx, ly, lw, "City Map")
+        if self.citymap is None:
+            pr.draw_text("Map unavailable.", lx + 8, ly + 30, FONT, INK_DIM)
+            return
+        mx, my, ms = self._map_rect(lx, ly, lw, lh)
+        ext = self._map_ext()
+        # Frame + a faint grid so positions read as a map, not a scatter.
+        pr.draw_rectangle(mx, my, ms, ms, pr.Color(58, 78, 44, 255))
+        grid = pr.Color(96, 116, 70, 120)
+        for f in (0.25, 0.5, 0.75):
+            gx, gy = int(mx + ms * f), int(my + ms * f)
+            pr.draw_line(gx, my, gx, my + ms, grid)
+            pr.draw_line(mx, gy, mx + ms, gy, grid)
+        pr.draw_rectangle_lines(mx, my, ms, ms, INK_DIM)
+        # "N" up-arrow in the corner so the orientation is obvious.
+        pr.draw_text("N", mx + ms - 12, my + 3, 12, INK)
+        markers = self.citymap.markers()
+        sel = min(self._map_sel, len(markers) - 1) if markers else -1
+        for i, mk in enumerate(markers):
+            sx, sy = self._map_project(mk["x"], mk["z"], mx, my, ms, ext)
+            c = mk["color"]
+            r = 4 if i == sel else 3
+            pr.draw_circle(int(sx), int(sy), r + 1, INK)          # dark halo for contrast
+            pr.draw_circle(int(sx), int(sy), r, pr.Color(c[0], c[1], c[2], 255))
+            if i == sel:
+                pr.draw_circle_lines(int(sx), int(sy), r + 4, pr.Color(255, 255, 255, 255))
+        # "You are here" pin.
+        here = self.citymap.here()
+        if here is not None:
+            hx, hz, yaw, facing = here
+            sx, sy = self._map_project(hx, hz, mx, my, ms, ext)
+            blue = pr.Color(80, 170, 255, 255)
+            pr.draw_circle(int(sx), int(sy), 5, blue)
+            pr.draw_circle_lines(int(sx), int(sy), 8, pr.Color(255, 255, 255, 255))
+            if facing:                                            # heading line
+                a = math.radians(yaw)
+                pr.draw_line(int(sx), int(sy),
+                             int(sx + math.sin(a) * 11), int(sy - math.cos(a) * 11),
+                             pr.Color(255, 255, 255, 255))
+        # Readout: selected POI name + distance/heading from you.
+        y = my + ms + 6
+        if markers and sel >= 0:
+            mk = markers[sel]
+            pr.draw_text(_short(mk["label"], 30), lx + 6, y, FONT, INK)
+            if here is not None:
+                dx, dz = mk["x"] - here[0], mk["z"] - here[1]
+                info = f"{int(math.hypot(dx, dz))}m {self._compass(dx, dz)}"
+                iw = pr.measure_text(info, 12)
+                pr.draw_text(info, lx + lw - iw - 6, y + 2, 12, INK_DIM)
+        pr.draw_text("◄ ► select · tap a pin", lx + 6, y + 18, 11, INK_DIM)
 
     def _update_inbox(self) -> None:
         msgs = self.inbox.messages()
@@ -619,6 +797,10 @@ class PhonePanel:
                               int(lw * s), int(lh * s))
         if self.screen == HOME:
             self._draw_home(lx, ly, lw, lh)
+        elif self.screen == CF_MENU:
+            self._draw_cf_menu(lx, ly, lw, lh)
+        elif self.screen == MAP:
+            self._draw_map(lx, ly, lw, lh)
         elif self.screen == HIRE:
             self._draw_hire(lx, ly, lw, lh)
         elif self.screen == HIRE_ROLE:
@@ -631,6 +813,8 @@ class PhonePanel:
             self._draw_message(lx, ly, lw, lh)
         elif self.screen == CONTACTS:
             self._draw_contacts(lx, ly, lw, lh)
+        elif self.screen == TASKS:
+            self._draw_tasks(lx, ly, lw, lh)
         elif self.screen in (COFOUNDER, AGENT):
             self._draw_thread(lx, ly, lw, lh, is_cofounder=self.screen == COFOUNDER)
         elif self.screen == CALL:
@@ -703,6 +887,8 @@ class PhonePanel:
                  ("Contacts", "message / call an agent"),
                  ("Hire", hire_hint),
                  ("To-Do", todo_hint),
+                 ("Map", "find your way around"),
+                 ("Tasks", "fire work to the team"),
                  ("Close", "")]
         ys, rh, _, _ = self._rows(len(items))
         for i, (label, hint) in enumerate(items):
@@ -970,6 +1156,56 @@ class PhonePanel:
             col = INK if self.input else INK_DIM
             pr.draw_text(hint, lx + 7, input_y, FONT, col)
 
+    # --- Tasks: fire work to the team queue (idle agents pick it up) --------
+
+    def _update_tasks(self) -> None:
+        if self._back():
+            self.screen, self.sel = HOME, 6
+            return
+        ch = pr.get_char_pressed()
+        while ch > 0:
+            if 32 <= ch < 127 and len(self.input) < 300:
+                self.input += chr(ch)
+            ch = pr.get_char_pressed()
+        bs = pr.is_key_pressed(pr.KEY_BACKSPACE)
+        if hasattr(pr, "is_key_pressed_repeat"):
+            bs = bs or pr.is_key_pressed_repeat(pr.KEY_BACKSPACE)
+        if bs and self.input:
+            self.input = self.input[:-1]
+        fire = pr.is_key_pressed(pr.KEY_ENTER) or self._softkey_clicked(self._sk_left_rect)
+        if fire and self.input.strip():
+            self._fire_task(self.input.strip())
+            self.input = ""
+
+    def _fire_task(self, text: str) -> None:
+        if task_queue is None:
+            self._task_flash = "Task queue unavailable."
+            return
+        try:
+            task_queue.enqueue(text)
+            self._task_flash = f"Fired ✓  ({task_queue.pending()} in the queue)"
+        except Exception as exc:
+            self._task_flash = f"⚠ couldn't queue: {exc}"
+
+    def _draw_tasks(self, lx, ly, lw, lh) -> None:
+        self._draw_status_strip(lx, ly, lw, "Tasks")
+        y = ly + 30
+        blurb = ("Fire a task to the team. An idle agent grabs it off the queue and "
+                 "works it — keep firing, you never wait.")
+        for line in _wrap(blurb, lw - 14, 13)[:4]:
+            pr.draw_text(line, lx + 7, y, 13, INK_DIM)
+            y += 16
+        if self._task_flash:
+            y += 4
+            for line in _wrap(self._task_flash, lw - 14, 13)[:2]:
+                pr.draw_text(line, lx + 7, y, 13, INK)
+                y += 16
+        input_y = ly + lh - 24
+        pr.draw_line(lx, input_y - 4, lx + lw, input_y - 4, INK_DIM)
+        caret = "_" if (pr.get_time() % 1.0) < 0.5 else " "
+        hint = "> " + self.input + caret if self.input else "> type a task, Enter to fire"
+        pr.draw_text(hint, lx + 7, input_y, FONT, INK if self.input else INK_DIM)
+
     def _draw_call(self, lx, ly, lw, lh) -> None:
         self._draw_status_strip(lx, ly, lw, "Call")
         cx = lx + lw // 2
@@ -993,6 +1229,10 @@ class PhonePanel:
     def _draw_softkeys(self, bx, by, lcd_bottom) -> None:
         if self.screen == HOME:
             left, right = "Select", "Exit"
+        elif self.screen == CF_MENU:
+            left, right = "Select", "Back"
+        elif self.screen == MAP:
+            left, right = "", "Back"
         elif self.screen == INBOX:
             left, right = "Open", "Back"
         elif self.screen == MESSAGE:
@@ -1008,6 +1248,8 @@ class PhonePanel:
             left, right = "Hire", "Back"
         elif self.screen == CALL:
             left, right = "", "End"
+        elif self.screen == TASKS:
+            left, right = "Fire", "Back"
         else:
             left, right = "Send", "Back"
         y = lcd_bottom + 6

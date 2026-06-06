@@ -69,6 +69,8 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "chamber": (8, 8), "registrar": (12, 8), "research_firm": (8, 12),
             "bureau": (12, 12), "signshop": (13, 9), "brandstudio": (7, 10),
             "citybank": (13, 11), "broker": (14, 11),
+            # The Grants Office (LLM-judged business grants), civic cluster.
+            "grants": (8, 10),
             # The Startup Incubator hosts the Business Model Canvas workshop.
             "incubator": (10, 7),
             # Apex Ventures (the VC firm) on its own downtown block in the cluster.
@@ -146,6 +148,7 @@ class NpcBuilding:
     tasks: tuple = ()          # workshop: an ordered list of to-do keys
     store: str | None = None   # storefront kind ("outfit" = the wardrobe shop)
     market: str | None = None  # idle-market venue ("bank" / "broker") opened inside
+    service: str | None = None # civic service opened inside ("grant" = the grants office)
     plan: str | None = None    # interior floor-plan id (else the default quest plan)
 
     @property
@@ -161,9 +164,13 @@ class NpcBuilding:
         return self.market is not None
 
     @property
+    def is_service(self) -> bool:
+        return self.service is not None
+
+    @property
     def interactive(self) -> bool:
-        """Walk-up + E does something here (a quest to-do, a storefront, a market)."""
-        return self.is_quest_stop or self.is_store or self.is_market
+        """Walk-up + E does something here (a quest, storefront, market, or service)."""
+        return self.is_quest_stop or self.is_store or self.is_market or self.is_service
 
     def task_keys(self) -> tuple:
         """Every to-do this stop can complete (one for a shop, many for a workshop)."""
@@ -433,7 +440,7 @@ class Park:
                         task=n.get("task"), reward=int(n.get("reward", 0)),
                         blurb=n.get("blurb", ""), tasks=tuple(n.get("tasks", ())),
                         store=n.get("store"), market=n.get("market"),
-                        plan=n.get("plan"))
+                        service=n.get("service"), plan=n.get("plan"))
             for n in (npc if npc is not None else load_npc())
         ]
         for lot in lots:
