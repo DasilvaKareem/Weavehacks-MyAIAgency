@@ -1,0 +1,423 @@
+{
+  "_comment": "Agent marketplace: every hireable character. `model` is the gltf in assets/models; `category` drives tabs; `price` is hire cost.",
+  "items": [
+    {
+      "id": "BaseCharacter",
+      "name": "Intern",
+      "model": "BaseCharacter.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "BlueSoldier_Female",
+      "name": "Blue Soldier  (F)",
+      "model": "BlueSoldier_Female.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "BlueSoldier_Male",
+      "name": "Blue Soldier  (M)",
+      "model": "BlueSoldier_Male.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Casual2_Female",
+      "name": "Casual II  (F)",
+      "model": "Casual2_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Casual2_Male",
+      "name": "Casual II  (M)",
+      "model": "Casual2_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Casual3_Female",
+      "name": "Casual III  (F)",
+      "model": "Casual3_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Casual3_Male",
+      "name": "Casual III  (M)",
+      "model": "Casual3_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Casual_Bald",
+      "name": "Casual (Bald)",
+      "model": "Casual_Bald.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Casual_Female",
+      "name": "Casual  (F)",
+      "model": "Casual_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Casual_Male",
+      "name": "Casual  (M)",
+      "model": "Casual_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Chef_Female",
+      "name": "Chef  (F)",
+      "model": "Chef_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Chef_Hat",
+      "name": "Head Chef",
+      "model": "Chef_Hat.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Chef_Male",
+      "name": "Chef  (M)",
+      "model": "Chef_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Cow",
+      "name": "Office Cow",
+      "model": "Cow.gltf",
+      "category": "critters",
+      "price": 1500
+    },
+    {
+      "id": "Cowboy_Female",
+      "name": "Cowgirl  (F)",
+      "model": "Cowboy_Female.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Cowboy_Hair",
+      "name": "Cowboy (Long Hair)",
+      "model": "Cowboy_Hair.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Cowboy_Male",
+      "name": "Cowboy  (M)",
+      "model": "Cowboy_Male.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Doctor_Female_Old",
+      "name": "Senior Doctor",
+      "model": "Doctor_Female_Old.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Doctor_Female_Young",
+      "name": "Doctor",
+      "model": "Doctor_Female_Young.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Doctor_Male_Old",
+      "name": "Senior Doctor  (M)",
+      "model": "Doctor_Male_Old.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Doctor_Male_Young",
+      "name": "Doctor  (M)",
+      "model": "Doctor_Male_Young.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Elf",
+      "name": "Elf",
+      "model": "Elf.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Goblin_Female",
+      "name": "Goblin  (F)",
+      "model": "Goblin_Female.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Goblin_Male",
+      "name": "Goblin  (M)",
+      "model": "Goblin_Male.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Kimono_Female",
+      "name": "Kimono  (F)",
+      "model": "Kimono_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Kimono_Male",
+      "name": "Kimono  (M)",
+      "model": "Kimono_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Knight_Golden_Female",
+      "name": "Golden Knight  (F)",
+      "model": "Knight_Golden_Female.gltf",
+      "category": "fantasy",
+      "price": 4000,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Knight_Golden_Male",
+      "name": "Golden Knight  (M)",
+      "model": "Knight_Golden_Male.gltf",
+      "category": "fantasy",
+      "price": 4000,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Knight_Male",
+      "name": "Knight  (M)",
+      "model": "Knight_Male.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Ninja_Female",
+      "name": "Ninja  (F)",
+      "model": "Ninja_Female.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Ninja_Male",
+      "name": "Ninja  (M)",
+      "model": "Ninja_Male.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Ninja_Male_Hair",
+      "name": "Ninja (Topknot)",
+      "model": "Ninja_Male_Hair.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Ninja_Sand",
+      "name": "Sand Ninja",
+      "model": "Ninja_Sand.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Ninja_Sand_Female",
+      "name": "Sand Ninja  (F)",
+      "model": "Ninja_Sand_Female.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "OldClassy_Female",
+      "name": "Distinguished  (F)",
+      "model": "OldClassy_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "OldClassy_Male",
+      "name": "Distinguished  (M)",
+      "model": "OldClassy_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Pirate_Female",
+      "name": "Pirate  (F)",
+      "model": "Pirate_Female.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Pirate_Male",
+      "name": "Pirate  (M)",
+      "model": "Pirate_Male.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Pug",
+      "name": "Office Pug",
+      "model": "Pug.gltf",
+      "category": "critters",
+      "price": 1500
+    },
+    {
+      "id": "Soldier_Female",
+      "name": "Soldier  (F)",
+      "model": "Soldier_Female.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Soldier_Male",
+      "name": "Soldier  (M)",
+      "model": "Soldier_Male.gltf",
+      "category": "warriors",
+      "price": 2600,
+      "locked": true,
+      "unlock": 3000
+    },
+    {
+      "id": "Suit_Female",
+      "name": "Executive  (F)",
+      "model": "Suit_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Suit_Male",
+      "name": "Executive  (M)",
+      "model": "Suit_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "VikingHelmet",
+      "name": "Viking (Helmed)",
+      "model": "VikingHelmet.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Viking_Female",
+      "name": "Viking  (F)",
+      "model": "Viking_Female.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Viking_Male",
+      "name": "Viking  (M)",
+      "model": "Viking_Male.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Witch",
+      "name": "Witch  (F)",
+      "model": "Witch.gltf",
+      "category": "fantasy",
+      "price": 3500,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Wizard",
+      "name": "Wizard",
+      "model": "Wizard.gltf",
+      "category": "fantasy",
+      "price": 3500,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Worker_Female",
+      "name": "Worker  (F)",
+      "model": "Worker_Female.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Worker_Male",
+      "name": "Worker  (M)",
+      "model": "Worker_Male.gltf",
+      "category": "office",
+      "price": 2000
+    },
+    {
+      "id": "Zombie_Female",
+      "name": "Zombie  (F)",
+      "model": "Zombie_Female.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    },
+    {
+      "id": "Zombie_Male",
+      "name": "Zombie  (M)",
+      "model": "Zombie_Male.gltf",
+      "category": "fantasy",
+      "price": 3200,
+      "locked": true,
+      "unlock": 5000
+    }
+  ]
+}

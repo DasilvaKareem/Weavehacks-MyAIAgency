@@ -1,0 +1,34 @@
+{
+  "_comment": "Office shop catalog. `category` drives the shop tabs. Furniture `kind` maps to a builder in game/furniture.py; paint `kind` (floor_paint/wall_paint/door_paint) recolors the room with `color` [r,g,b]. Prices are in company cash.",
+  "items": [
+    { "id": "chair",      "name": "Office Chair",   "category": "furniture", "kind": "chair",   "price": 150, "params": { "face": 1 },     "desc": "Ergonomic swivel chair." },
+    { "id": "plant_desk", "name": "Desk Plant",     "category": "furniture", "kind": "plant",   "price": 90,  "params": { "tall": false }, "desc": "A little potted succulent." },
+    { "id": "plant_tall", "name": "Floor Plant",    "category": "furniture", "kind": "plant",   "price": 260, "params": { "tall": true },  "desc": "Leafy corner greenery." },
+    { "id": "cabinet",    "name": "Filing Cabinet", "category": "furniture", "kind": "cabinet", "price": 340, "params": {},                "desc": "Stash those quarterly reports." },
+    { "id": "bin",        "name": "Trash Bin",      "category": "furniture", "kind": "bin",     "price": 50,  "params": {},                "desc": "For crumpled bad ideas." },
+    { "id": "cooler",     "name": "Water Cooler",   "category": "furniture", "kind": "cooler",  "price": 420, "params": {},                "desc": "Where the real strategy happens." },
+    { "id": "rug",        "name": "Area Rug",       "category": "furniture", "kind": "rug",     "price": 300, "params": {},                "desc": "Really ties the room together." },
+    { "id": "couch",      "name": "Lounge Couch",   "category": "furniture", "kind": "couch",   "price": 700, "params": {},                "desc": "Power-nap approved." },
+
+    { "id": "floor_cloud",    "name": "Cloud Grey",   "category": "floor", "kind": "floor_paint", "price": 300, "color": [228, 230, 238], "desc": "The classic clean default." },
+    { "id": "floor_oak",      "name": "Warm Oak",     "category": "floor", "kind": "floor_paint", "price": 500, "color": [180, 150, 110], "desc": "Warm timber tones." },
+    { "id": "floor_slate",    "name": "Slate",        "category": "floor", "kind": "floor_paint", "price": 500, "color": [90, 96, 108],   "desc": "Cool industrial grey." },
+    { "id": "floor_forest",   "name": "Forest Green", "category": "floor", "kind": "floor_paint", "price": 550, "color": [70, 110, 90],   "desc": "Deep mossy green." },
+    { "id": "floor_sand",     "name": "Sandstone",    "category": "floor", "kind": "floor_paint", "price": 450, "color": [212, 196, 160], "desc": "Soft desert beige." },
+    { "id": "floor_charcoal", "name": "Charcoal",     "category": "floor", "kind": "floor_paint", "price": 600, "color": [50, 54, 62],    "desc": "Moody near-black." },
+
+    { "id": "wall_offwhite", "name": "Off-White",  "category": "wall", "kind": "wall_paint", "price": 250, "color": [222, 224, 232], "desc": "Bright and neutral." },
+    { "id": "wall_sage",     "name": "Sage",       "category": "wall", "kind": "wall_paint", "price": 400, "color": [150, 175, 150], "desc": "Calm muted green." },
+    { "id": "wall_sky",      "name": "Sky Blue",   "category": "wall", "kind": "wall_paint", "price": 400, "color": [160, 195, 225], "desc": "Airy and open." },
+    { "id": "wall_blush",    "name": "Blush",      "category": "wall", "kind": "wall_paint", "price": 400, "color": [222, 182, 186], "desc": "Soft warm pink." },
+    { "id": "wall_mint",     "name": "Mint",       "category": "wall", "kind": "wall_paint", "price": 400, "color": [172, 206, 190], "desc": "Fresh and cool." },
+    { "id": "wall_graphite", "name": "Graphite",   "category": "wall", "kind": "wall_paint", "price": 480, "color": [92, 97, 108],   "desc": "Bold dark accent wall." },
+
+    { "id": "door_oak",    "name": "Classic Oak", "category": "door", "kind": "door_paint", "price": 200, "color": [150, 105, 70],  "desc": "The default warm wood." },
+    { "id": "door_walnut", "name": "Walnut",      "category": "door", "kind": "door_paint", "price": 300, "color": [110, 75, 55],   "desc": "Rich dark timber." },
+    { "id": "door_cherry", "name": "Cherry Red",  "category": "door", "kind": "door_paint", "price": 320, "color": [165, 60, 55],   "desc": "Bold statement entrance." },
+    { "id": "door_teal",   "name": "Teal",        "category": "door", "kind": "door_paint", "price": 340, "color": [40, 120, 120],  "desc": "Cool and confident." },
+    { "id": "door_mint",   "name": "Mint Green",  "category": "door", "kind": "door_paint", "price": 320, "color": [120, 180, 140], "desc": "Friendly and fresh." },
+    { "id": "door_black",  "name": "Jet Black",   "category": "door", "kind": "door_paint", "price": 360, "color": [40, 42, 48],    "desc": "Sleek and modern." }
+  ]
+}

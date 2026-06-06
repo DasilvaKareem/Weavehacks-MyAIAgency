@@ -1,0 +1,77 @@
+{
+  "_comment": "Handcrafted office floor plans. Each leased building references one by id (see park_lots.json `plan`). Zones sit in the OPEN front band, with enough depth that a meeting stool ring (radius ~1.35) and a lounge clear the last desk row even at full occupancy. kind drives behaviour: meeting=table+stools, lounge=couch, coffee/whiteboard/door=walk-to landmarks.",
+  "plans": {
+    "hq": {
+      "name": "HQ",
+      "cols": 16, "rows": 13,
+      "desk_cols": [3, 5, 7, 9, 11, 13],
+      "desk_rows": [2, 4, 6],
+      "furniture_seed": 1337,
+      "zones": [
+        {"name": "whiteboard", "kind": "whiteboard", "col": 2.0, "row": 9.0},
+        {"name": "coffee", "kind": "coffee", "col": 13.0, "row": 9.0},
+        {"name": "meeting", "kind": "meeting", "col": 7.5, "row": 9.0},
+        {"name": "door", "kind": "door", "col": 11.0, "row": 11.0},
+        {"name": "lounge", "kind": "lounge", "col": 4.0, "row": 11.0}
+      ]
+    },
+    "studio": {
+      "name": "Creative Studio",
+      "cols": 16, "rows": 13,
+      "desk_cols": [3, 5, 7, 9, 11],
+      "desk_rows": [2, 4, 6],
+      "furniture_seed": 4242,
+      "zones": [
+        {"name": "whiteboard", "kind": "whiteboard", "col": 2.0, "row": 9.0},
+        {"name": "coffee", "kind": "coffee", "col": 13.0, "row": 9.0},
+        {"name": "meeting", "kind": "meeting", "col": 3.0, "row": 10.0},
+        {"name": "lounge", "kind": "lounge", "col": 13.0, "row": 10.5},
+        {"name": "door", "kind": "door", "col": 8.0, "row": 11.5}
+      ]
+    },
+    "tower": {
+      "name": "Corporate Tower",
+      "cols": 20, "rows": 16,
+      "desk_cols": [3, 5, 7, 9, 11, 13, 15, 17],
+      "desk_rows": [2, 4, 6, 8],
+      "furniture_seed": 9001,
+      "zones": [
+        {"name": "coffee", "kind": "coffee", "col": 2.0, "row": 11.0},
+        {"name": "whiteboard", "kind": "whiteboard", "col": 10.0, "row": 12.0},
+        {"name": "meeting", "kind": "meeting", "col": 5.0, "row": 12.0},
+        {"name": "meeting2", "kind": "meeting", "col": 14.0, "row": 12.0},
+        {"name": "lounge", "kind": "lounge", "col": 2.0, "row": 14.0},
+        {"name": "lounge2", "kind": "lounge", "col": 17.0, "row": 14.0},
+        {"name": "door", "kind": "door", "col": 10.0, "row": 14.5}
+      ]
+    },
+
+    "lobby": {
+      "name": "Lobby",
+      "cols": 12, "rows": 10,
+      "desk_cols": [4], "desk_rows": [6],
+      "furniture_seed": 555,
+      "kind": "lobby",
+      "zones": [
+        {"name": "entrance", "kind": "entrance", "col": 6.0, "row": 8.0},
+        {"name": "elevator", "kind": "elevator", "col": 6.0, "row": 1.5},
+        {"name": "reception", "kind": "reception", "col": 3.0, "row": 6.5},
+        {"name": "wing_west", "kind": "wing_west", "col": 1.5, "row": 4.0},
+        {"name": "wing_east", "kind": "wing_east", "col": 10.5, "row": 4.0}
+      ]
+    },
+
+    "elev_lobby": {
+      "name": "Elevator Lobby",
+      "cols": 12, "rows": 10,
+      "desk_cols": [], "desk_rows": [],
+      "furniture_seed": 556,
+      "kind": "elevator_lobby",
+      "zones": [
+        {"name": "elevator", "kind": "elevator", "col": 6.0, "row": 1.5},
+        {"name": "wing_west", "kind": "wing_west", "col": 1.5, "row": 5.0},
+        {"name": "wing_east", "kind": "wing_east", "col": 10.5, "row": 5.0}
+      ]
+    }
+  }
+}

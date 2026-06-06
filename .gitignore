@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+.env.*
+*.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Database
+company.db
+company.db-wal
+company.db-shm
+
+# Node
+node_modules/
+
+# OS
+.DS_Store

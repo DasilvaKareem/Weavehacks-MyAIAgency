@@ -1,0 +1,25 @@
+# Backend — LangGraph + Gemini multi-agent orchestration.
+# REQUIRES Python >=3.10. Install in a separate venv (see README "Backend"):
+#     python3.12 -m venv .venv && source .venv/bin/activate
+#     pip install -r requirements-backend.txt
+langgraph>=1.0
+langchain-google-genai>=2.0
+python-dotenv>=1.0
+# Durable local scheduler (`python -m backend.worker_service`).
+croniter>=2.0
+# MCP tool bridge — lets DevOps agents call the real Opsera tools (optional at
+# runtime; see backend/mcp_bridge.py + OPSERA_MCP_URL / OPSERA_MCP_TOKEN).
+langchain-mcp-adapters>=0.2
+mcp>=1.2
+# Daytona cloud sandbox — Software Engineer agent runs real code (DAYTONA_API_KEY).
+daytona>=0.18
+# Composio — Google/SaaS app agents (COMPOSIO_API_KEY + COMPOSIO_USER_ID).
+composio-langchain>=0.13
+# Firebase Realtime Database — realtime agent meetings + presence (hybrid with
+# local SQLite; see backend/meeting_store.py + FIREBASE_* in .env).
+firebase-admin>=7.0
+# Pipecat voice layer — agents speak via Gemini TTS (uses GEMINI_API_KEY, no GCP
+# setup). [local] pulls PyAudio for playback (needs `brew install portaudio`).
+# See backend/voice_pipeline.py + backend/voice_meeting.py. NOTE: pins
+# google-genai ~1.75 (down from 2.x) — existing stack verified compatible.
+pipecat-ai[google,local]>=1.3
