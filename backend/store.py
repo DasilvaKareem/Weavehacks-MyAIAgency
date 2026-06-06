@@ -387,6 +387,15 @@ class AgentStore:
         with self._conn() as c:
             c.execute("UPDATE agents SET policy = ? WHERE id = ?", (policy_json, agent_id))
 
+    def set_role(self, agent_id: str, role: str, dept: str | None = None) -> None:
+        """Repurpose an agent: change its role (and optionally department)."""
+        with self._conn() as c:
+            if dept is None:
+                c.execute("UPDATE agents SET role = ? WHERE id = ?", (role, agent_id))
+            else:
+                c.execute("UPDATE agents SET role = ?, dept = ? WHERE id = ?",
+                          (role, dept, agent_id))
+
     def set_home_room(self, agent_id: str, home_room: str) -> None:
         """Persist which interior room (wing) an agent works in."""
         with self._conn() as c:

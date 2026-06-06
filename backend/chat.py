@@ -17,6 +17,7 @@ from . import company
 from .config import GEMINI_MODEL, role_profile
 from .llm import get_llm
 from .mcp_bridge import run_tool_loop_sync
+from .observability import tag, traced
 from .persona import generate as make_persona, render_prompt as render_persona
 from .store import AgentStore
 from .tool_builder import build_tools_sync
@@ -30,6 +31,16 @@ _PERSONA = (
     "Stay in character as {name}. Speak in the first person about your own work, "
     "be concrete and concise, and ask for clarification when a request is ambiguous."
 )
+
+
+@traced
+def chat_attempt(llm, msgs, tools, on_step, on_token) -> str:
+    """One hired agent's reply attempt — traced as its own op so Weave records
+    THIS agent's real cost/latency (and any crash) tagged to their id. Raises on
+    hard failure; AgentChat.send catches it outside to salvage partial streams."""
+    if tools:
+        return run_tool_loop_sync(llm, msgs, tools, on_step=on_step, on_token=on_token).strip()
+    return _text(llm.invoke(msgs)).strip()
 
 
 class AgentChat:
@@ -102,17 +113,17 @@ class AgentChat:
             if on_token:
                 on_token(tok)
 
-        try:
-            if tools:
-                reply = run_tool_loop_sync(
-                    self.llm, msgs, tools, on_step=on_step, on_token=_emit).strip()
-            else:
-                reply = _text(self.llm.invoke(msgs)).strip()
-        except Exception:
-            partial = "".join(collected).strip()
-            if not partial:
-                raise                    # nothing salvageable → behave as before
-            reply = f"{partial}\n\n_[interrupted before finishing]_"
+        # Tag this turn with the hired agent's identity so its real traces are
+        # attributed to THEM in Weave — the data HR reads to fire/repurpose.
+        with tag(agent_id=self.agent.id, agent_name=self.agent.name,
+                 role=self.agent.role, kind="chat"):
+            try:
+                reply = chat_attempt(self.llm, msgs, tools, on_step, _emit)
+            except Exception:
+                partial = "".join(collected).strip()
+                if not partial:
+                    raise                # nothing salvageable → behave as before
+                reply = f"{partial}\n\n_[interrupted before finishing]_"
 
         # Persist the exchange so the next turn (and next session) remembers it.
         self.store.add_message(self.agent.id, "ai", reply)

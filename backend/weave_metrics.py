@@ -57,13 +57,30 @@ def is_llm_call(call) -> bool:
     return "Llm." in (getattr(call, "op_name", "") or "")
 
 
-def is_attempt(call) -> bool:
-    """The per-task agent op (agents.agent_attempt) — one per task, raises on crash.
+# Canonical role buckets, so a hired "Research Analyst" joins the planner's
+# "Researcher" trace. Most-specific keywords first (mirrors config._match_profile).
+_ROLE_KEYWORDS = (
+    "observ", "devops", "research", "data scien", "engineer", "design", "ux",
+    "market", "analyst", "sales", "recruit", "human resource", "hr", "assistant",
+    "document", "sheets", "support", "operations", "finance", "blog",
+)
 
-    This is the right denominator for crash rate: one attempt = one task, and its
-    call.exception is set iff the agent actually failed.
+
+def canon_role(role: str) -> str:
+    """Map any role title to a canonical bucket so traces and the roster join."""
+    low = (role or "").lower()
+    for kw in _ROLE_KEYWORDS:
+        if kw in low:
+            return kw
+    return low.split()[0] if low.split() else low
+
+
+def is_attempt(call) -> bool:
+    """A per-task agent op that raises on crash — graph workers (agent_attempt) or
+    1:1 chats (chat_attempt). One attempt = one task; call.exception set iff it
+    actually failed. The right denominator for crash rate.
     """
-    return op_short(call) == "agent_attempt"
+    return op_short(call) in ("agent_attempt", "chat_attempt")
 
 
 def call_cost(call) -> float:
@@ -147,6 +164,44 @@ def role_breakdown(calls) -> dict:
     return rows
 
 
+def agent_breakdown(calls) -> dict:
+    """Per-INDIVIDUAL economics, keyed by the real hired agent_id (from chats /
+    assigned tasks). This is the genuine per-person track record — cost, latency,
+    and crash rate for that specific employee, not a role average.
+    """
+    rows: dict[str, dict] = {}
+    for c in calls:
+        aid = attrs(c).get("agent_id")
+        if not aid:
+            continue
+        if is_llm_call(c):
+            r = _row(rows, aid)
+            r["calls"] += 1
+            pin, pout = call_tokens(c)
+            r["in"] += pin
+            r["out"] += pout
+            r["cost"] += call_cost(c)
+            lat = latency_s(c)
+            if lat is not None:
+                r["lat"] += lat
+                r["timed"] += 1
+            r.setdefault("name", attrs(c).get("agent_name"))
+            r.setdefault("role", attrs(c).get("role"))
+        elif is_attempt(c):
+            r = _row(rows, aid)
+            r["tasks"] += 1
+            if getattr(c, "exception", None):
+                r["errors"] += 1
+            r.setdefault("name", attrs(c).get("agent_name"))
+            r.setdefault("role", attrs(c).get("role"))
+    for r in rows.values():
+        r["tokens"] = r["in"] + r["out"]
+        r["cost_per_call"] = r["cost"] / r["calls"] if r["calls"] else 0.0
+        r["avg_latency"] = r["lat"] / r["timed"] if r["timed"] else 0.0
+        r["error_rate"] = r["errors"] / r["tasks"] if r["tasks"] else 0.0
+    return rows
+
+
 def run_breakdown(calls) -> dict:
     """Per-company-run cost, keyed by run_id (-> cost_per_goal)."""
     runs: dict[str, dict] = {}
@@ -223,6 +278,65 @@ def optimization_verdict(calls) -> dict:
     }
 
 
+def staffing_recommendations(calls, roster) -> list:
+    """Join per-role Weave economics to the hired roster -> a per-agent verdict.
+
+    `roster` is an iterable of objects with .id/.name/.role. Returns dicts sorted
+    FIRE → COACH → REPURPOSE → KEEP so HR can act worst-first. This is the bridge
+    that lets the HR agent decide who to fire/repurpose from real telemetry rather
+    than guessing — the Observability Engineer measures, HR acts.
+    """
+    per_agent = agent_breakdown(calls)   # real, id-keyed (from this person's chats)
+    role_rows = role_breakdown(calls)    # role-level fallback (from graph runs)
+    if not per_agent and not role_rows:
+        return []
+
+    # role buckets for fallback when an individual has no personal traces yet
+    bucket: dict[str, dict] = {}
+    for role, r in role_rows.items():
+        b = bucket.setdefault(canon_role(role),
+                              {"cost_per_call": 0.0, "error_rate": 0.0, "tasks": 0, "n": 0})
+        b["cost_per_call"] += r["cost_per_call"]
+        b["error_rate"] = max(b["error_rate"], r["error_rate"])
+        b["tasks"] += r["tasks"]
+        b["n"] += 1
+    for b in bucket.values():
+        if b["n"]:
+            b["cost_per_call"] /= b["n"]
+
+    # median over whatever cost-per-call signals we actually have
+    costs_seen = [r["cost_per_call"] for r in per_agent.values() if r["calls"]] or \
+                 [r["cost_per_call"] for r in role_rows.values() if r["calls"]]
+    med_cost = median(costs_seen) if costs_seen else 1e-12
+
+    recs = []
+    for a in roster:
+        m = per_agent.get(getattr(a, "id", None))
+        basis = "own traces"
+        if not m or m["tasks"] == 0:           # no personal data → role proxy
+            m = bucket.get(canon_role(getattr(a, "role", "")))
+            basis = "role average"
+        if not m or m["tasks"] == 0:
+            recs.append({"agent": a, "action": "KEEP", "basis": "none",
+                         "reason": "no telemetry yet (hasn't done traced work)", "metrics": m})
+            continue
+        cost_x = m["cost_per_call"] / med_cost
+        if m["error_rate"] >= 0.5:
+            action, reason = "FIRE", f"crashing {m['error_rate']*100:.0f}% of tasks"
+        elif m["error_rate"] >= 0.25:
+            action, reason = "COACH", f"failing {m['error_rate']*100:.0f}% of tasks"
+        elif cost_x >= 1.75:
+            action, reason = "REPURPOSE", f"{cost_x:.1f}x the median cost per call"
+        else:
+            action, reason = "KEEP", "performing within range of peers"
+        recs.append({"agent": a, "action": action, "reason": f"{reason} ({basis})",
+                     "metrics": m, "cost_x": cost_x, "basis": basis})
+
+    rank = {"FIRE": 0, "COACH": 1, "REPURPOSE": 2, "KEEP": 3}
+    recs.sort(key=lambda x: rank.get(x["action"], 9))
+    return recs
+
+
 # --- text rendering (for the agent's tool replies) --------------------------
 
 def render_breakdown(rows: dict) -> str:
@@ -235,6 +349,26 @@ def render_breakdown(rows: dict) -> str:
                  if r["tasks"] else "no tasks yet")
         lines.append(
             f"- {role}: {r['calls']} call(s), {r['tokens']:,} tok, "
+            f"{fmt_usd(r['cost'])} ({fmt_usd(r['cost_per_call'])}/call), "
+            f"{r['avg_latency']:.2f}s avg, {crash}"
+        )
+    return "\n".join(lines)
+
+
+def render_agents(rows: dict) -> str:
+    """Per-individual economics (keyed by real agent_id) for hired employees."""
+    if not rows:
+        return ("No per-agent traces yet — chat with a hired agent (or run their "
+                "jobs) so their work is attributed to them, then check again.")
+    order = sorted(rows.items(), key=lambda kv: kv[1]["cost"], reverse=True)
+    lines = ["Per-employee economics (each agent's OWN live Weave traces):"]
+    for aid, r in order:
+        who = r.get("name") or aid
+        role = r.get("role") or "?"
+        crash = (f"{r['error_rate']*100:.0f}% crash ({r['errors']}/{r['tasks']})"
+                 if r["tasks"] else "no tasks yet")
+        lines.append(
+            f"- {who} ({role}, id {aid}): {r['calls']} call(s), "
             f"{fmt_usd(r['cost'])} ({fmt_usd(r['cost_per_call'])}/call), "
             f"{r['avg_latency']:.2f}s avg, {crash}"
         )

@@ -119,6 +119,54 @@ def load_hr_tools() -> list:
         return f"Fired {a.name} ({a.role}). Reason on record: {reason}"
 
     @tool
+    def staffing_review() -> str:
+        """Recommend who to FIRE / COACH / REPURPOSE / KEEP, grounded in LIVE W&B
+        Weave telemetry (cost, latency, and crash rate per role) joined to the real
+        roster. Call this BEFORE firing anyone so the decision is data-driven, not a
+        guess — it tells you exactly which hired agent is broken or wasteful and the
+        id to act on. Then use fire_agent or repurpose_agent."""
+        try:
+            from .observability import init_weave, is_configured
+            from . import weave_metrics as wm
+            if not is_configured():
+                return ("No observability data — WANDB_API_KEY isn't set, so I can't "
+                        "ground staffing on telemetry. Review agents manually instead.")
+            client = init_weave()
+            if client is None:
+                return "Weave is unavailable right now; can't pull telemetry."
+            recs = wm.staffing_recommendations(
+                wm.fetch_calls(client, 400), store.list_agents())
+            if not recs:
+                return ("No agent traces yet — run the company at least once so "
+                        "agents are measured, then review.")
+            lines = ["Data-driven staffing review (from live Weave traces):"]
+            for r in recs:
+                a = r["agent"]
+                lines.append(f"- [{r['action']}] {a.name} — {a.role} "
+                             f"(id {a.id}): {r['reason']}")
+            lines.append("\nAct with fire_agent(id, reason) or "
+                         "repurpose_agent(id, new_role, reason).")
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"[staffing review error: {exc}]"
+
+    @tool
+    def repurpose_agent(agent_id: str, new_role: str, reason: str) -> str:
+        """Repurpose an agent into a new role instead of firing them — use when
+        someone underperforms in their current role but could add value elsewhere
+        (cheaper than re-hiring). Changes their role live and files a note."""
+        a = store.get(agent_id)
+        if a is None:
+            return f"No agent with id {agent_id!r}. Run list_team to see valid ids."
+        if a.status == "fired":
+            return f"{a.name} has already been let go — can't repurpose."
+        old = a.role
+        store.set_role(agent_id, new_role)
+        store.add_evaluation(a.id, 50, f"Repurposed {old} → {new_role}: {reason}",
+                             reviewer="HR")
+        return f"Repurposed {a.name}: {old} → {new_role}. Reason on record: {reason}"
+
+    @tool
     def team_report() -> str:
         """A one-shot overview of the whole company: headcount, a breakdown by
         status and department, and the average performance score. Use this when
@@ -145,4 +193,5 @@ def load_hr_tools() -> list:
         ]
         return "\n".join(out)
 
-    return [list_team, review_agent, evaluate_agent, fire_agent, team_report]
+    return [list_team, review_agent, evaluate_agent, staffing_review,
+            repurpose_agent, fire_agent, team_report]

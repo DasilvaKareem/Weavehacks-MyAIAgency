@@ -71,15 +71,20 @@ def load_weave_tools(author_id: str | None = None, author_name: str = "") -> lis
 
     @tool
     def agent_economics(limit: int = 400) -> str:
-        """Per-agent cost, latency, tokens and error rate from live Weave traces.
+        """Cost, latency, tokens and crash rate per agent from live Weave traces.
 
-        This is the key tool: it breaks spend and speed down BY AGENT/ROLE so you
-        can see who is expensive, slow, or failing. Use it for any question about
-        which agents are pulling their weight.
+        Shows each HIRED employee's own track record when available (from their
+        chats/jobs), and the per-role view from company runs. Use it for any
+        question about who is expensive, slow, or failing.
         """
         try:
             calls = wm.fetch_calls(client, limit)
-            return wm.render_breakdown(wm.role_breakdown(calls))
+            people = wm.agent_breakdown(calls)
+            parts = []
+            if people:
+                parts.append(wm.render_agents(people))
+            parts.append(wm.render_breakdown(wm.role_breakdown(calls)))
+            return "\n\n".join(parts)
         except Exception as exc:
             return f"[weave error: {exc}]"
 
