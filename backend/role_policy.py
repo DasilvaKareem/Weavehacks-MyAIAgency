@@ -70,6 +70,17 @@ def set(role: str, **overrides) -> dict:
     return cur
 
 
+def replace(role: str, overrides: dict) -> None:
+    """Set a role's overrides to EXACTLY `overrides` (used to revert a change that
+    hurt quality). Empty dict clears the role."""
+    pol = _load()
+    if overrides:
+        pol[_key(role)] = dict(overrides)
+    else:
+        pol.pop(_key(role), None)
+    _save()
+
+
 def all() -> dict:
     return dict(_load())
 
