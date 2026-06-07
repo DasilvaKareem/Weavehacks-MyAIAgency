@@ -612,6 +612,9 @@ class Park:
         self._car_models.unload()
         self._prop_models.unload()
         self._street_models.unload()
+        if hasattr(self, "_unit_cube"):
+            pr.unload_model(self._unit_cube)
+            del self._unit_cube
 
     # --- queries -----------------------------------------------------------
     def leased(self) -> list[Building]:
@@ -726,6 +729,35 @@ class Park:
                                  pr.Vector3(s, s, s), tint)
             else:
                 self._draw_car_box(c, v, gy)
+
+    def draw_vehicle(self, name: str, x: float, z: float, yaw: float) -> bool:
+        """Draw one free-standing car (the player's drivable, not ambient traffic)
+        at an arbitrary world pose. Reuses the same GLB cache, brightening and flat
+        tint as the traffic fleet so the CEO's ride matches the city. `yaw` follows
+        the shared convention (0 = nose along +Z). Returns True if a GLB drew.
+
+        Unlike the ambient box fallback (axis-aligned), a freely-steered car needs a
+        rotated body, so the no-model path draws an oriented box via a unit cube
+        transform rather than draw_cube."""
+        from .traffic import VEHICLES
+        v = next((vv for vv in VEHICLES if vv.name == name), None)
+        gy = self.ground_y(x, z)
+        ld = self._car_models.get(name)
+        if ld is not None:
+            s = ld.scale
+            extra = v.yaw if v else 0.0
+            tint = _c(v.tint) if (v and v.tint) else pr.WHITE
+            pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off + gy, z),
+                             pr.Vector3(0, 1, 0), yaw + extra, pr.Vector3(s, s, s), tint)
+            return True
+        # Fallback: an oriented body box (rotate a unit cube model on the fly).
+        L, W, H = (v.box if v else (4.0, 1.8, 1.3))
+        col = _c(v.color) if v else pr.Color(210, 60, 55, 255)
+        if not hasattr(self, "_unit_cube"):
+            self._unit_cube = pr.load_model_from_mesh(pr.gen_mesh_cube(1.0, 1.0, 1.0))
+        pr.draw_model_ex(self._unit_cube, pr.Vector3(x, gy + H * 0.45, z),
+                         pr.Vector3(0, 1, 0), yaw, pr.Vector3(W, H * 0.9, L), col)
+        return False
 
     def _draw_car_box(self, c, v, gy: float = 0.0) -> None:
         body, cabin = _c(v.color), _c(tuple(int(x * 0.6) for x in v.color))

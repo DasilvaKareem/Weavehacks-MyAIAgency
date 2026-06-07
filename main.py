@@ -23,7 +23,7 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle
 from game import park as parkmod
 from game.park import Park, load_lots as load_park
 from game.shop import ShopPanel, load_catalog
@@ -118,6 +118,13 @@ class Game:
         self.mode = "office"
         self.park = Park(load_park())
         self.pedestrians = Pedestrians()              # ambient sidewalk crowd (park)
+        # The CEO's drivable car: a free-steered ride parked near the park spawn.
+        # Walk up and press F to take the wheel; F again to step out. Persists where
+        # you leave it (it isn't re-parked on every park entry). Groundwork toward a
+        # full garage/fleet — for now, one car the CEO can cruise the city in.
+        _csx, _csz = self.park.spawn
+        self.car = vehicle.DrivableCar(x=_csx + 4.5, z=_csz, yaw=0.0, model="SportsCar")
+        self.driving = False
         # Robin, your co-founder-to-be: stands a few steps ahead of the park spawn
         # with a "!" overhead, so your very first move is to walk up and pitch them
         # (the coffee meeting). Built once here; reused as the actor inside the cafe
@@ -2680,6 +2687,49 @@ class Game:
             else:
                 self._close_quest_input()
 
+    # -- Driving (the CEO's car) ----------------------------------------------
+
+    def _enter_car(self) -> None:
+        """Take the wheel: kill any roll, recenter the camera behind the car, and
+        flash the controls. The CEO rides the car from here on."""
+        self.driving = True
+        self.car.stop()
+        self.camera.recenter(self.car)
+        self._toast("Driving — W/S throttle · A/D steer · Space brake · F to step out")
+
+    def _exit_car(self) -> None:
+        """Step out beside the car, back onto your feet."""
+        self.driving = False
+        self.car.stop()
+        ceo = self.player.ch
+        hx, hz = self.car.heading()
+        ceo.x = self.car.x - hz * 2.2            # out the driver's side (heading-left)
+        ceo.z = self.car.z + hx * 2.2
+        ceo.x, ceo.z = self.park.collide(ceo.x, ceo.z)
+        ceo.yaw = self.car.yaw
+        self.camera.recenter(ceo)
+        self._toast("Parked.")
+
+    def _draw_drive_hud(self, car_near: bool) -> None:
+        """A speed readout + controls strip while driving, or a 'press F' nudge when
+        standing next to the parked car."""
+        sw, sh = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+        if self.driving:
+            spd = f"{abs(self.car.speed) * 3.6:4.0f} km/h"
+            if self.car.speed < -vehicle.CREEP_SPEED:
+                spd += "  R"
+            pr.draw_text(spd, sw - pr.measure_text(spd, 30) - 28, 26, 30, pr.RAYWHITE)
+            hint = "W/S throttle    A/D steer    Space brake    F to step out"
+            tw = pr.measure_text(hint, 18)
+            pr.draw_rectangle((sw - tw) // 2 - 12, sh - 46, tw + 24, 30, pr.Color(0, 0, 0, 150))
+            pr.draw_text(hint, (sw - tw) // 2, sh - 41, 18, pr.Color(235, 235, 240, 255))
+        elif car_near:
+            text = "Press  F  to drive"
+            tw = pr.measure_text(text, 20)
+            x = (sw - tw) // 2
+            pr.draw_rectangle(x - 12, sh - 132, tw + 24, 32, pr.Color(0, 0, 0, 160))
+            pr.draw_text(text, x, sh - 126, 20, pr.RAYWHITE)
+
     def _park_frame(self, dt: float) -> None:
         """One frame of the walkable park: move, lease/enter, draw."""
         self.park.update(dt)          # advance ambient city traffic
@@ -2714,7 +2764,31 @@ class Game:
         # Bob is out here for the welcome gift, or waiting at a park to bail you out.
         show_bob = (not self._bob_done
                     or (self._bob_rescue_pending and not self._bob_rescue_done))
-        if not frozen:
+        # Within walking reach of the parked car (only matters when on foot).
+        car_near = (not self.driving
+                    and math.hypot(self.car.x - ceo.x, self.car.z - ceo.z) <= parkmod.REACH)
+        if not frozen and self.driving:
+            # Behind the wheel: WASD / left stick drive, Space is the handbrake. The
+            # CEO rides the car (so stepping out drops them right here), and the
+            # camera follows the car instead of the walking avatar.
+            gx, gy_ = gamepad.left_stick()
+            throttle = (pr.is_key_down(pr.KEY_W) - pr.is_key_down(pr.KEY_S)) - gy_
+            steer = (pr.is_key_down(pr.KEY_D) - pr.is_key_down(pr.KEY_A)) + gx
+            handbrake = pr.is_key_down(pr.KEY_SPACE) or gamepad.down(gamepad.CROSS)
+            self.car.update(dt, throttle, steer, handbrake)
+            # Stop at buildings and the city edge; a hard stop bleeds momentum.
+            nx, nz = self.park.collide(self.car.x, self.car.z, r=1.2)
+            bx, bz = self.park.bounds
+            nx = max(-bx + 2.0, min(bx - 2.0, nx))
+            nz = max(-bz + 2.0, min(bz - 2.0, nz))
+            if (nx - self.car.x) ** 2 + (nz - self.car.z) ** 2 > 1e-4:
+                self.car.speed *= 0.3            # scraped a wall — kill most of the speed
+            self.car.x, self.car.z = nx, nz
+            self.car.y = self.park.ground_y(self.car.x, self.car.z)
+            ceo.x, ceo.z, ceo.yaw = self.car.x, self.car.z, self.car.yaw
+            self.camera.update(dt, self.car)
+            self._update_companion(dt)           # Robin still trails the car
+        elif not frozen:
             self.player.update(dt, self.camera)
             ceo.x, ceo.z = self.park.collide(ceo.x, ceo.z)   # block walking through buildings
             self.camera.update(dt, self.player.ch)
@@ -2793,6 +2867,14 @@ class Game:
                 self._e_cooldown = 8
 
         if not frozen:
+            # F — get in / out of the car. Available driving (exit) or on foot next
+            # to it (enter). It's its own key, so it never competes with E-interact.
+            if pr.is_key_pressed(pr.KEY_F):
+                if self.driving:
+                    self._exit_car(); return
+                elif car_near:
+                    self._enter_car(); return
+        if not frozen and not self.driving:
             if pr.is_key_pressed(pr.KEY_P):
                 self._enter_office(); return
             if guide is not None and pr.is_key_pressed(pr.KEY_G):   # call off the guide
@@ -2885,9 +2967,17 @@ class Game:
             self.robin.draw(self.registry)
         if guide is not None:                    # the gold "go here" beacon for your picked to-do
             self.park.draw_guide_beacon(guide[0], guide[1])
-        ceo.draw(self.registry)
+        # The CEO's car always sits in the world; while driving, the CEO is "inside"
+        # it so we hide the walking avatar and let the car stand in for them.
+        self.park.draw_vehicle(self.car.model, self.car.x, self.car.z, self.car.yaw)
+        if not self.driving:
+            ceo.draw(self.registry)
         pr.end_mode_3d()
-        self._draw_park_overlay(near, near_npc, near_biz)
+        if self.driving:                         # no on-foot interaction prompts at the wheel
+            self._draw_park_overlay(None, None, None)
+        else:
+            self._draw_park_overlay(near, near_npc, near_biz)
+        self._draw_drive_hud(car_near)
         if guide is not None:                    # top chip + screen-edge arrow to the spot
             self._draw_guide_hud(guide)
         self._draw_companion_chip()
