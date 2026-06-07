@@ -730,29 +730,37 @@ class Park:
             else:
                 self._draw_car_box(c, v, gy)
 
-    def draw_vehicle(self, name: str, x: float, z: float, yaw: float) -> bool:
+    def draw_vehicle(self, name: str, x: float, z: float, yaw: float,
+                     alpha: int = 255) -> bool:
         """Draw one free-standing car (the player's drivable, not ambient traffic)
         at an arbitrary world pose. Reuses the same GLB cache, brightening and flat
         tint as the traffic fleet so the CEO's ride matches the city. `yaw` follows
         the shared convention (0 = nose along +Z). Returns True if a GLB drew.
+
+        `alpha` < 255 draws the car as a translucent cyan hologram — used for the
+        Auto Mall's ghost showroom display cars (the ones you haven't bought).
 
         Unlike the ambient box fallback (axis-aligned), a freely-steered car needs a
         rotated body, so the no-model path draws an oriented box via a unit cube
         transform rather than draw_cube."""
         from .traffic import VEHICLES
         v = next((vv for vv in VEHICLES if vv.name == name), None)
+        ghost = alpha < 255
         gy = self.ground_y(x, z)
         ld = self._car_models.get(name)
         if ld is not None:
             s = ld.scale
             extra = v.yaw if v else 0.0
-            tint = _c(v.tint) if (v and v.tint) else pr.WHITE
+            if ghost:
+                tint = pr.Color(150, 220, 255, alpha)        # showroom hologram
+            else:
+                tint = _c(v.tint) if (v and v.tint) else pr.WHITE
             pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off + gy, z),
                              pr.Vector3(0, 1, 0), yaw + extra, pr.Vector3(s, s, s), tint)
             return True
         # Fallback: an oriented body box (rotate a unit cube model on the fly).
         L, W, H = (v.box if v else (4.0, 1.8, 1.3))
-        col = _c(v.color) if v else pr.Color(210, 60, 55, 255)
+        col = pr.Color(150, 220, 255, alpha) if ghost else (_c(v.color) if v else pr.Color(210, 60, 55, 255))
         if not hasattr(self, "_unit_cube"):
             self._unit_cube = pr.load_model_from_mesh(pr.gen_mesh_cube(1.0, 1.0, 1.0))
         pr.draw_model_ex(self._unit_cube, pr.Vector3(x, gy + H * 0.45, z),

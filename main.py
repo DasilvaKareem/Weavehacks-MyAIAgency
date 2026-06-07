@@ -23,9 +23,9 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle, dealership
 from game import park as parkmod
-from game.park import Park, load_lots as load_park
+from game.park import Park, load_lots as load_park, block_pos
 from game.shop import ShopPanel, load_catalog
 from game.marketplace import load_catalog as load_agents
 from game.assets import ModelRegistry
@@ -118,13 +118,18 @@ class Game:
         self.mode = "office"
         self.park = Park(load_park())
         self.pedestrians = Pedestrians()              # ambient sidewalk crowd (park)
-        # The CEO's drivable car: a free-steered ride parked near the park spawn.
-        # Walk up and press F to take the wheel; F again to step out. Persists where
-        # you leave it (it isn't re-parked on every park entry). Groundwork toward a
-        # full garage/fleet — for now, one car the CEO can cruise the city in.
-        _csx, _csz = self.park.spawn
-        self.car = vehicle.DrivableCar(x=_csx + 4.5, z=_csz, yaw=0.0, model="SportsCar")
+        # Driving is gated behind OWNERSHIP: the CEO can't just hop in a car, they
+        # have to buy one at the Auto Mall first (the door stays locked until then).
+        #   • self.dealership — a showroom of translucent "ghost" cars one block east
+        #     of spawn (block 11,9 is building-free), each a model + price.
+        #   • self.owned_car — the model basename you've bought, or None.
+        #   • self.car — the drivable ride; only real once you own one (positioned at
+        #     the showroom slot you purchased). F to drive, F again to step out.
+        self.dealership = dealership.Dealership(*block_pos(11, 9))
+        self.owned_car: str | None = None
+        self.car = vehicle.DrivableCar(model="SportsCar")   # pose set on purchase
         self.driving = False
+        self._deal_spin = 0.0                               # turntable angle for ghosts
         # Robin, your co-founder-to-be: stands a few steps ahead of the park spawn
         # with a "!" overhead, so your very first move is to walk up and pitch them
         # (the coffee meeting). Built once here; reused as the actor inside the cafe
@@ -2687,7 +2692,7 @@ class Game:
             else:
                 self._close_quest_input()
 
-    # -- Driving (the CEO's car) ----------------------------------------------
+    # -- Driving + the Auto Mall ----------------------------------------------
 
     def _enter_car(self) -> None:
         """Take the wheel: kill any roll, recenter the camera behind the car, and
@@ -2710,10 +2715,62 @@ class Game:
         self.camera.recenter(ceo)
         self._toast("Parked.")
 
-    def _draw_drive_hud(self, car_near: bool) -> None:
-        """A speed readout + controls strip while driving, or a 'press F' nudge when
-        standing next to the parked car."""
+    def _buy_car(self, deal) -> None:
+        """Purchase a showroom car. Gated on cash; on success the ghost is replaced
+        by your real, drivable car sitting in that slot. One car at a time."""
+        if self.owned_car is not None:
+            self._toast("You already own a car — sell it before buying another.")
+            return
+        if self.cash < deal.price:
+            self._toast(f"🔒 Locked — the {deal.name} costs ${deal.price:,} "
+                        f"(you have ${int(self.cash):,}).")
+            return
+        self.cash -= deal.price
+        self.owned_car = deal.model
+        deal.sold = True
+        # Materialize the real car where the display car stood, facing out of the lot.
+        self.car.model = deal.model
+        self.car.x, self.car.z, self.car.yaw = deal.x, deal.z, 0.0
+        self.car.stop()
+        self._toast(f"Bought the {deal.name}! Walk up and press F to drive.")
+
+    def _draw_showroom_cars(self) -> None:
+        """The Auto Mall's ghost display cars (3D pass). Each unsold car is a slowly
+        spinning translucent hologram on its turntable; sold slots are skipped (the
+        real car is drawn there instead)."""
+        for c in self.dealership.cars:
+            if c.sold:
+                continue
+            self.park.draw_vehicle(c.model, c.x, c.z, c.yaw + self._deal_spin, alpha=110)
+
+    def _draw_showroom_labels(self, deal_near) -> None:
+        """Price tags over each ghost car + the AUTO MALL banner (2D pass, after the
+        3D scene). The car the CEO is standing at is highlighted gold."""
+        d = self.dealership
+        self._label_3d("AUTO MALL", "buy a car to unlock driving",
+                       pr.Color(150, 220, 255, 255), d.x, 4.4, d.z, font=18,
+                       main_color=pr.Color(150, 220, 255, 255))
+        for c in d.cars:
+            if c.sold:
+                continue
+            hot = c is deal_near
+            afford = self.owned_car is None and self.cash >= c.price
+            col = (pr.Color(245, 214, 120, 255) if hot
+                   else (pr.RAYWHITE if afford else pr.Color(230, 150, 150, 255)))
+            self._label_3d(c.name, f"${c.price:,}", pr.Color(180, 230, 255, 255),
+                           c.x, 2.3, c.z, font=15, main_color=col)
+
+    def _draw_drive_hud(self, car_near: bool, deal_near=None) -> None:
+        """Speed + controls while driving; a 'press F' nudge by your owned car; or a
+        buy / locked prompt while standing at a showroom car."""
         sw, sh = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+
+        def _prompt(text, color=pr.RAYWHITE):
+            tw = pr.measure_text(text, 20)
+            x = (sw - tw) // 2
+            pr.draw_rectangle(x - 12, sh - 132, tw + 24, 32, pr.Color(0, 0, 0, 170))
+            pr.draw_text(text, x, sh - 126, 20, color)
+
         if self.driving:
             spd = f"{abs(self.car.speed) * 3.6:4.0f} km/h"
             if self.car.speed < -vehicle.CREEP_SPEED:
@@ -2723,12 +2780,18 @@ class Game:
             tw = pr.measure_text(hint, 18)
             pr.draw_rectangle((sw - tw) // 2 - 12, sh - 46, tw + 24, 30, pr.Color(0, 0, 0, 150))
             pr.draw_text(hint, (sw - tw) // 2, sh - 41, 18, pr.Color(235, 235, 240, 255))
+        elif deal_near is not None:
+            if self.owned_car is not None:
+                _prompt(f"{deal_near.name} — you already own a car",
+                        pr.Color(230, 150, 150, 255))
+            elif self.cash >= deal_near.price:
+                _prompt(f"Press  E  to buy the {deal_near.name}  —  ${deal_near.price:,}",
+                        pr.Color(245, 214, 120, 255))
+            else:
+                _prompt(f"🔒 Locked — the {deal_near.name} costs ${deal_near.price:,}",
+                        pr.Color(235, 170, 170, 255))
         elif car_near:
-            text = "Press  F  to drive"
-            tw = pr.measure_text(text, 20)
-            x = (sw - tw) // 2
-            pr.draw_rectangle(x - 12, sh - 132, tw + 24, 32, pr.Color(0, 0, 0, 160))
-            pr.draw_text(text, x, sh - 126, 20, pr.RAYWHITE)
+            _prompt("Press  F  to drive")
 
     def _park_frame(self, dt: float) -> None:
         """One frame of the walkable park: move, lease/enter, draw."""
@@ -2764,9 +2827,13 @@ class Game:
         # Bob is out here for the welcome gift, or waiting at a park to bail you out.
         show_bob = (not self._bob_done
                     or (self._bob_rescue_pending and not self._bob_rescue_done))
-        # Within walking reach of the parked car (only matters when on foot).
-        car_near = (not self.driving
+        # Within walking reach of your OWNED car (only matters on foot), or of a
+        # showroom display car you could buy. The turntable spins the ghost cars.
+        self._deal_spin = (self._deal_spin + dt * 28.0) % 360.0
+        car_near = (not self.driving and self.owned_car is not None
                     and math.hypot(self.car.x - ceo.x, self.car.z - ceo.z) <= parkmod.REACH)
+        deal_near = (None if self.driving
+                     else self.dealership.nearest(ceo.x, ceo.z, parkmod.REACH))
         if not frozen and self.driving:
             # Behind the wheel: WASD / left stick drive, Space is the handbrake. The
             # CEO rides the car (so stepping out drops them right here), and the
@@ -2855,7 +2922,7 @@ class Game:
         near_biz = None
         if (near is None and near_npc is None and not intern_near and not bob_near
                 and not lady_near and not civilian_near and not pet_near
-                and not busker_near and not guitar_near):
+                and not busker_near and not guitar_near and deal_near is None):
             near_biz = self.park.nearest_business(ceo.x, ceo.z)
 
         # An open business card swallows the next E/Esc to dismiss itself (the world
@@ -2874,6 +2941,11 @@ class Game:
                     self._exit_car(); return
                 elif car_near:
                     self._enter_car(); return
+                elif deal_near is not None and self.owned_car is None:
+                    # Tried the door on a showroom car — it's locked until you buy it.
+                    self._toast(f"🔒 The {deal_near.name} is locked — press E to buy "
+                                f"it (${deal_near.price:,}).")
+                    return
         if not frozen and not self.driving:
             if pr.is_key_pressed(pr.KEY_P):
                 self._enter_office(); return
@@ -2917,6 +2989,9 @@ class Game:
                 self._talk_to_busker()
             elif guitar_near and press_e:        # found the guitar → carry it back
                 self._find_guitar()
+            elif deal_near is not None and press_e:  # Auto Mall ghost car → buy it
+                self._buy_car(deal_near)
+                self._e_cooldown = 8
             elif near_biz is not None and press_e:   # any backdrop shopfront → it talks back
                 self._open_business(near_biz)
 
@@ -2967,9 +3042,11 @@ class Game:
             self.robin.draw(self.registry)
         if guide is not None:                    # the gold "go here" beacon for your picked to-do
             self.park.draw_guide_beacon(guide[0], guide[1])
-        # The CEO's car always sits in the world; while driving, the CEO is "inside"
-        # it so we hide the walking avatar and let the car stand in for them.
-        self.park.draw_vehicle(self.car.model, self.car.x, self.car.z, self.car.yaw)
+        self._draw_showroom_cars()               # Auto Mall ghost display cars
+        # Your owned car sits in the world once bought; while driving the CEO is
+        # "inside" it, so we hide the walking avatar and let the car stand in.
+        if self.owned_car is not None:
+            self.park.draw_vehicle(self.car.model, self.car.x, self.car.z, self.car.yaw)
         if not self.driving:
             ceo.draw(self.registry)
         pr.end_mode_3d()
@@ -2977,7 +3054,8 @@ class Game:
             self._draw_park_overlay(None, None, None)
         else:
             self._draw_park_overlay(near, near_npc, near_biz)
-        self._draw_drive_hud(car_near)
+            self._draw_showroom_labels(deal_near)
+        self._draw_drive_hud(car_near, deal_near)
         if guide is not None:                    # top chip + screen-edge arrow to the spot
             self._draw_guide_hud(guide)
         self._draw_companion_chip()
