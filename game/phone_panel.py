@@ -32,6 +32,7 @@ HOME, COFOUNDER, CONTACTS, AGENT, CALL = "home", "cofounder", "contacts", "agent
 INBOX, MESSAGE, TODO = "inbox", "message", "todo"
 CF_MENU = "cf_menu"          # co-founder hub: Follow me / Wait here / Send message
 MAP = "map"                  # city map: POIs + "you are here"
+TAXI = "taxi"                # summon an AI taxi to any POI for a flat fare
 CLOCK = "clock"              # calendar + in-game time-of-day (to the minute)
 TASKS = "tasks"              # fire tasks to the team queue (idle agents pick them up)
 HIRE, HIRE_ROLE = "hire", "hire_role"        # the hiring app: candidate card → role grid
@@ -80,7 +81,7 @@ def _fit(text: str, size: int, max_w: int) -> str:
 class PhonePanel:
     def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None,
                  hire=None, follow=None, citymap=None, clock=None, guide=None,
-                 locate=None) -> None:
+                 locate=None, taxi=None) -> None:
         self.link = link                  # CompanyLink (agent 1:1 chat)
         self.coord = coordinator          # CoordinatorLink (co-founder)
         self._contacts = contacts_getter  # () -> list[Character]
@@ -92,8 +93,10 @@ class PhonePanel:
         self.clock = clock                # clock bridge (state() -> date+time dict), optional
         self.guide = guide                # to-do guide bridge (start(key) -> (ok, msg)), optional
         self.locate = locate              # (agent) -> short "where they sit" label, optional
+        self.taxi = taxi                  # taxi bridge (summon(x,z,label)->(ok,msg), fare), optional
         self._todo_flash = ""             # transient note on the To-Do screen (e.g. why no guide)
-        self._map_sel = 0                 # selected POI index on the MAP screen
+        self._taxi_flash = ""             # transient note on the TAXI screen (e.g. "not enough cash")
+        self._map_sel = 0                 # selected POI index on the MAP / TAXI screen
         self._cand = None                 # the auto-generated candidate awaiting a role
         self._hire_flash = ""             # transient "Office full" / "Hired!" message
         self._task_flash = ""             # transient "Fired ✓" note on the Tasks screen
@@ -286,7 +289,7 @@ class PhonePanel:
             self._update_home()
         elif self.screen == CF_MENU:
             self._update_cf_menu()
-        elif self.screen == MAP:
+        elif self.screen in (MAP, TAXI):
             self._update_map()
         elif self.screen == CLOCK:
             self._update_clock()
@@ -335,7 +338,7 @@ class PhonePanel:
                 or self._softkey_clicked(self._sk_right_rect))
 
     def _update_home(self) -> None:
-        items = 9
+        items = 10
         self._nav(items)
         # Mouse: click a row to pick it.
         ys, rh, lx, lw = self._rows(items)
@@ -375,6 +378,8 @@ class PhonePanel:
         elif self.sel == 6:
             self.screen, self.input, self._task_flash = TASKS, "", ""
         elif self.sel == 7:
+            self.screen, self._map_sel, self._taxi_flash = TAXI, self._default_map_sel(), ""
+        elif self.sel == 8:
             self.screen = CLOCK
         else:
             self.close()
@@ -451,8 +456,9 @@ class PhonePanel:
         return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((ang + 22.5) // 45) % 8]
 
     def _update_map(self) -> None:
+        taxi_mode = self.screen == TAXI
         if self.citymap is None or self._back():
-            self.screen, self.sel = HOME, 5
+            self.screen, self.sel = HOME, (7 if taxi_mode else 5)
             return
         markers = self.citymap.markers()
         n = len(markers)
@@ -479,9 +485,26 @@ class PhonePanel:
                     best, best_d = i, d
             if best >= 0:
                 self._map_sel = best
+        # Enter / left soft-key / Cross. In Map mode: wayfind to the POI (gold marker)
+        # and close the phone. In Taxi mode: summon an AI taxi to that POI for the fare
+        # — on success the phone closes and the ride cinematic takes over; on failure
+        # (e.g. too broke) a note shows and we stay put.
+        if self._enter() and 0 <= self._map_sel < n:
+            mk = markers[self._map_sel]
+            if taxi_mode:
+                if self.taxi is not None:
+                    ok, msg = self.taxi.summon(mk["x"], mk["z"], mk["label"])
+                    self._taxi_flash = msg or ""
+                    if ok:
+                        self.close()
+            elif getattr(self.guide, "point", None):
+                self.guide.point(mk["x"], mk["z"], mk["label"])
+                self.close()
 
     def _draw_map(self, lx, ly, lw, lh) -> None:
-        self._draw_status_strip(lx, ly, lw, "City Map")
+        taxi_mode = self.screen == TAXI
+        fare = self.taxi.fare if (taxi_mode and self.taxi is not None) else 0
+        self._draw_status_strip(lx, ly, lw, f"Taxi  ·  ${fare}" if taxi_mode else "City Map")
         if self.citymap is None:
             pr.draw_text("Map unavailable.", lx + 8, ly + 30, FONT, INK_DIM)
             return
@@ -564,7 +587,12 @@ class PhonePanel:
         pr.draw_text("lease", lease_x + 8, ly2, 11, INK_DIM)
         you_x = lx + 116
         pr.draw_circle(you_x, ly2 + 6, 4, pr.Color(80, 170, 255, 255))
-        pr.draw_text("you  · ◄►/tap", you_x + 8, ly2, 11, INK_DIM)
+        hint = "you · ◄► pick · Ride→go" if taxi_mode else "you  · ◄► pick · Pin→go"
+        pr.draw_text(hint, you_x + 8, ly2, 11, INK_DIM)
+        if taxi_mode and self._taxi_flash:           # e.g. "Not enough cash"
+            fw = pr.measure_text(self._taxi_flash, 12)
+            pr.draw_text(self._taxi_flash, lx + (lw - fw) // 2, ly2 + 16, 12,
+                         pr.Color(150, 40, 30, 255))
 
     def _default_map_sel(self) -> int:
         """Open the map with your HQ (else any owned office) pre-selected, so the
@@ -885,7 +913,7 @@ class PhonePanel:
             self._draw_home(lx, ly, lw, lh)
         elif self.screen == CF_MENU:
             self._draw_cf_menu(lx, ly, lw, lh)
-        elif self.screen == MAP:
+        elif self.screen in (MAP, TAXI):
             self._draw_map(lx, ly, lw, lh)
         elif self.screen == CLOCK:
             self._draw_clock(lx, ly, lw, lh)
@@ -963,10 +991,16 @@ class PhonePanel:
         st = self._clock_state()
         return f"{st['hh']:02d}:{st['mm']:02d}"
 
+    def _taxi_hint(self) -> str:
+        """The hint shown beside 'Taxi' on the home menu."""
+        if self.taxi is None:
+            return "unavailable"
+        return f"summon a ride · ${self.taxi.fare}"
+
     def _update_clock(self) -> None:
         # Read-only screen: any select/back returns to the menu (cursor on Clock).
         if self._enter() or self._back():
-            self.screen, self.sel = HOME, 7
+            self.screen, self.sel = HOME, 8
 
     def _draw_clock(self, lx, ly, lw, lh) -> None:
         self._draw_status_strip(lx, ly, lw, "Clock")
@@ -1024,6 +1058,7 @@ class PhonePanel:
                  ("To-Do", todo_hint),
                  ("Map", "find your way around"),
                  ("Tasks", "fire work to the team"),
+                 ("Taxi", self._taxi_hint()),
                  ("Clock", self._clock_hint()),
                  ("Close", "")]
         ys, rh, _, _ = self._rows(len(items))
@@ -1378,7 +1413,9 @@ class PhonePanel:
         elif self.screen == CF_MENU:
             left, right = "Select", "Back"
         elif self.screen == MAP:
-            left, right = "", "Back"
+            left, right = "Pin", "Back"
+        elif self.screen == TAXI:
+            left, right = "Ride", "Back"
         elif self.screen == CLOCK:
             left, right = "", "Back"
         elif self.screen == INBOX:

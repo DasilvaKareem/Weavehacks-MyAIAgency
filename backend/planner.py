@@ -6,9 +6,10 @@ render thread (via CompanyLink's worker pool). It runs on hire and on notable
 events, never per frame.
 
 Split of labour, chosen to keep token cost near zero:
-  * Personality knobs (sociability / restlessness / focus) are DERIVED from the
-    agent's deterministic OCEAN persona — no model call. So even with no API key
-    a bot still moves in character.
+  * Personality knobs (sociability / restlessness / focus / explore) are DERIVED
+    from the agent's deterministic OCEAN persona — no model call. So even with no
+    API key a bot still moves in character (explore = how far it'll roam, e.g. up
+    to other floors/wings through the elevator and doorways).
   * The LLM only authors the flavourful parts: which zones this character would
     haunt (route), a handful of in-character banter lines, and a one-word mood.
 
@@ -44,6 +45,9 @@ def derive_knobs(persona) -> dict:
         # restless = curious (openness) and not too buttoned-down (low consc.)
         "restlessness": clamp((openn * 0.5 + (100 - consc) * 0.5) / 100.0),
         "focus": clamp(consc / 100.0),
+        # explore = how far they'll wander — curious (openness) AND outgoing
+        # (extraversion) people are the ones who roam to other floors/wings.
+        "explore": clamp((openn * 0.6 + extra * 0.4) / 100.0),
     }
 
 

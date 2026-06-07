@@ -37,6 +37,8 @@ class Character:
     brain: object = None      # BotBrain driving autonomous movement (agents only)
     seat: tuple | None = None  # world (x, z) of this character's chair, if seated work
     home_room: str | None = None  # interior room key this agent belongs to (its wing)
+    current_room: str | None = None  # room the agent is ACTUALLY in now (roams away; defaults to home_room)
+    desk_slot: int = -1       # stable desk index in the active room (-1 => no desk / overflow)
     _frame: float = -1.0      # <0 => seed a per-character phase on first update
 
     @property
@@ -88,12 +90,16 @@ class Character:
             # Hairstyle: keep the model's own hair (Default) or hide it and, unless
             # bald, draw a hair mesh borrowed from another model over the head.
             hair_src = self._hair_source()
-            self._set_own_hair_alpha(registry, model, 255 if hair_src is None else 0)
 
             s = config.CHARACTER_SCALE
             tint = getattr(registry, "char_tint", pr.WHITE)  # time-of-day lighting
-            pr.draw_model_ex(model, pos, pr.Vector3(0, 1, 0), self.yaw,
-                             pr.Vector3(s, s, s), tint)
+            # For a borrowed/bald style, SKIP the model's own hair mesh entirely
+            # rather than just making it transparent: an alpha-0 mesh is invisible
+            # but still writes depth, so the borrowed hair drawn over it z-fights
+            # and flickers (or loses the depth test and vanishes). Skipping the mesh
+            # leaves clear space for the overlay.
+            skip = registry.hair_mesh_index(self.model) if hair_src is not None else -1
+            self._draw_body(model, s, skip)
             if hair_src and hair_src != "bald":
                 self._draw_borrowed_hair(registry, hair_src, frame, s, tint)
         else:
@@ -109,12 +115,22 @@ class Character:
             return styles[self.hair_style][1]
         return None
 
-    def _set_own_hair_alpha(self, registry, model, alpha: int) -> None:
-        """Show (255) or hide (0) the model's built-in hair mesh via its material
-        alpha — so a borrowed hairstyle replaces it instead of poking through."""
-        mi = registry.get_material_index(self.model, config.HAIR_MATERIAL_NAME)
-        if mi >= 0:
-            model.materials[mi].maps[pr.MATERIAL_MAP_DIFFUSE].color.a = alpha
+    def _draw_body(self, model, s: float, skip_mesh: int) -> None:
+        """Draw the body mesh-by-mesh exactly as draw_model_ex would (same SRT *
+        model.transform, same per-mesh material), but optionally omit one mesh.
+        Used to truly remove the built-in hair for a borrowed/bald style: hiding
+        it via alpha-0 left an invisible-but-depth-writing dome that the borrowed
+        hair z-fought against (flicker) or lost to (vanished). char_tint is WHITE
+        on this build, so dropping draw_model_ex's tint multiply is a no-op."""
+        srt = pr.matrix_multiply(
+            pr.matrix_multiply(pr.matrix_scale(s, s, s),
+                               pr.matrix_rotate_y(math.radians(self.yaw))),
+            pr.matrix_translate(self.x, self.y, self.z))
+        mm = pr.matrix_multiply(model.transform, srt)
+        for i in range(model.meshCount):
+            if i == skip_mesh:
+                continue
+            pr.draw_mesh(model.meshes[i], model.materials[model.meshMaterial[i]], mm)
 
     def _draw_borrowed_hair(self, registry, src: str, frame: int, s: float, tint) -> None:
         """Pose another model's skeleton to our current frame and draw just its hair

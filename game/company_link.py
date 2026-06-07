@@ -13,7 +13,17 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 import queue
+import threading
+
+log = logging.getLogger("company.link")
+if not log.handlers:                 # the app configures no logging — give ours a voice
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[company.link] %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 from backend.store import AgentRow, AgentStore, Message
 from backend.chat import AgentChat
@@ -64,6 +74,17 @@ class CompanyLink:
         self._composio_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="composio"
         )
+        # Dedicated worker for the Weave quality leaderboard fetch, so a busy
+        # composio/agent pool can never starve the MONITOR tab (a saturated shared
+        # pool was leaving it stuck on "connecting" / empty during demos).
+        self._lb_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="weave-lb"
+        )
+        # Worker for the MONITOR "have the Observability Engineer fix this agent"
+        # action: a one-shot delegation (LLM + tools), kept off the leaderboard pool.
+        self._fix_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="weave-fix"
+        )
         self._chats: dict[str, AgentChat] = {}
         self._pending: dict[str, concurrent.futures.Future] = {}
         # Live tool-loop progress labels per agent, written from the chat worker
@@ -79,6 +100,48 @@ class CompanyLink:
             max_workers=1, thread_name_prefix="grant-judge"
         )
         self._grant: concurrent.futures.Future | None = None
+        # Single worker for the monthly customer-judge revenue call.
+        self._customer_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="customer-judge"
+        )
+        self._customers: concurrent.futures.Future | None = None
+        # Cached firehose backlog (background tasks in flight). Refreshed OFF the
+        # render thread so the terminal never blocks the game loop on a Redis
+        # round-trip — terminal_pending_tasks() returns this last-known value.
+        self._pend_count = 0
+        self._pend_at = 0.0
+        self._pend_busy = False
+        # The terminal is a NON-BLOCKING command line: directives are queued and a
+        # background pump runs them one at a time, so the CEO can fire message after
+        # message without ever waiting. _term_gen bumps when a turn finishes so the
+        # panel knows to re-read the log; _term_busy drives the 'thinking' indicator.
+        self._term_q: "queue.Queue[str]" = queue.Queue()
+        self._term_pump: threading.Thread | None = None
+        self._term_lock = threading.Lock()
+        self._term_busy = False
+        self._term_gen = 0
+        # Turn Weave tracing ON for the WHOLE session up-front (best-effort, off the
+        # render thread). Without this, weave.op/attributes are no-ops and nothing the
+        # CEO does this session is traced — the MONITOR tab would only ever show stale
+        # data and the agent you're talking to now wouldn't appear. Warming the client
+        # here also means the leaderboard fetch is instant (no cold init) when MONITOR
+        # is first opened, and pre-fetches one round so the tab is never empty on open.
+        self._weave_ready = False
+        threading.Thread(target=self._warm_weave, name="weave-warm", daemon=True).start()
+
+    def _warm_weave(self) -> None:
+        try:
+            from backend.observability import init_weave
+
+            if init_weave() is not None:
+                self._weave_ready = True
+                log.info("Weave tracing warmed at startup; pre-fetching leaderboard")
+                self.refresh_leaderboard()   # pre-fetch so MONITOR has data on open
+            else:
+                log.warning("Weave not configured at startup (no WANDB_API_KEY) — "
+                            "MONITOR will stay empty")
+        except Exception as exc:
+            log.warning("Weave warm-up failed: %r", exc)
 
     # --- persistence -------------------------------------------------------
 
@@ -292,8 +355,10 @@ class CompanyLink:
     def refresh_leaderboard(self) -> None:
         """Kick a background refresh of the live quality leaderboard (cached)."""
         fut = getattr(self, "_lb_pending", None)
-        if fut is not None and not fut.done():
-            return
+        if fut is not None:
+            if not fut.done():
+                return                       # one already in flight
+            self._drain_leaderboard(fut)     # capture its result before replacing it
 
         def _job():
             from backend.observability import init_weave
@@ -301,21 +366,156 @@ class CompanyLink:
 
             client = init_weave()
             if client is None:
+                log.warning("leaderboard: Weave client is None (WANDB_API_KEY unset?)")
                 return []
-            return wm.workforce_leaderboard(wm.fetch_calls(client, 300))
+            rows = wm.workforce_leaderboard(wm.fetch_calls(client, 300))
+            if len(rows) != getattr(self, "_lb_last_n", -1):
+                log.info("leaderboard: fetched %d agent row(s) from Weave", len(rows))
+                self._lb_last_n = len(rows)
+            return rows
 
-        self._lb_pending = self._composio_pool.submit(_job)
+        self._lb_pending = self._lb_pool.submit(_job)
+
+    def _drain_leaderboard(self, fut) -> None:
+        """Read a finished leaderboard future into the cache (logs failures)."""
+        try:
+            self._lb_cache = fut.result() or []
+        except Exception as exc:
+            log.warning("leaderboard fetch failed: %r", exc)
 
     def poll_leaderboard(self) -> list:
         """Latest cached leaderboard rows (best-first); refreshes opportunistically."""
         fut = getattr(self, "_lb_pending", None)
         if fut is not None and fut.done():
             self._lb_pending = None
+            self._drain_leaderboard(fut)
+        return list(getattr(self, "_lb_cache", []))
+
+    def diagnose_agent(self, agent_id: str) -> dict | None:
+        """Why is this agent crashing, and how to fix it — for the MONITOR click-through.
+
+        Kicks an off-thread Weave fetch the first time it's asked for an agent and
+        returns its cached result ({failures: [...], fix: str}) once ready, or None
+        while still loading. Cached per agent so reopening is instant.
+        """
+        cache = getattr(self, "_diag_cache", None)
+        if cache is None:
+            cache = self._diag_cache = {}
+        pend = getattr(self, "_diag_pending", None)
+        if pend is None:
+            pend = self._diag_pending = {}
+
+        fut = pend.get(agent_id)
+        if fut is not None and fut.done():
             try:
-                self._lb_cache = fut.result() or []
+                cache[agent_id] = fut.result()
+            except Exception as exc:
+                log.warning("diagnose_agent(%s) failed: %r", agent_id, exc)
+                cache[agent_id] = {"failures": [], "fix": ""}
+            pend.pop(agent_id, None)
+        if agent_id in cache:
+            return cache[agent_id]
+        if fut is None:                     # nothing in flight — start one
+            def _job(aid=agent_id):
+                from backend.observability import init_weave
+                from backend import weave_metrics as wm
+                client = init_weave()
+                if client is None:
+                    return {"failures": [], "fix": ""}
+                return wm.diagnose_agent(wm.fetch_calls(client, 400), aid)
+            pend[agent_id] = self._lb_pool.submit(_job)
+        return None                          # still loading
+
+    def ask_observability_fix(self, agent_row: dict) -> None:
+        """Hand a crashing agent to the Observability Engineer to diagnose + APPLY a
+        fix (off-thread). The engineer uses its real Weave tools and apply_optimization,
+        so this enacts a per-role override the workers obey next run — not just advice.
+        No-op if a fix request is already in flight."""
+        fut = getattr(self, "_fix_pending", None)
+        if fut is not None and not fut.done():
+            return
+        aid = agent_row.get("agent_id", "")
+        name = agent_row.get("name", "?")
+        role = agent_row.get("role", "?")
+
+        def _job():
+            from backend.observability import init_weave
+            from backend import weave_metrics as wm
+            from backend.delegation import run_agent_once
+            err = ""
+            try:
+                client = init_weave()
+                if client is not None:
+                    diag = wm.diagnose_agent(wm.fetch_calls(client, 400), aid)
+                    fails = diag.get("failures") or []
+                    err = fails[0]["error"] if fails else ""
             except Exception:
                 pass
-        return list(getattr(self, "_lb_cache", []))
+            task = (
+                f"Our hired {role} '{name}' is showing a high crash rate"
+                + (f" with this error: \"{err}\". " if err else ". ")
+                + "Use your tools (agent_economics, optimization_verdict, recent_failures) "
+                "to confirm the cause, then CALL apply_optimization to enact a concrete "
+                "fix so their next run is healthier. Reply in ONE or two sentences with "
+                "the exact change you made (or, if it was a transient error, say so)."
+            )
+            return run_agent_once("Observability Engineer", task, requester="CEO")
+
+        self._fix_for = aid
+        self._fix_pending = self._fix_pool.submit(_job)
+
+    def observability_fix_pending(self) -> bool:
+        fut = getattr(self, "_fix_pending", None)
+        return fut is not None and not fut.done()
+
+    def poll_observability_fix(self) -> tuple[str, str] | None:
+        """(agent_id, engineer_reply) for the most recent fix request, or None.
+
+        Drains the finished future into a cached result so the panel can keep
+        showing the engineer's answer under that agent after it completes."""
+        fut = getattr(self, "_fix_pending", None)
+        if fut is not None and fut.done():
+            self._fix_pending = None
+            try:
+                self._fix_result = (getattr(self, "_fix_for", ""), fut.result())
+            except Exception as exc:
+                self._fix_result = (getattr(self, "_fix_for", ""), f"[fix failed: {exc}]")
+        return getattr(self, "_fix_result", None)
+
+    def leaderboard_pending(self) -> bool:
+        """True while a Weave leaderboard fetch is in flight (so the MONITOR tab can
+        show 'connecting…' instead of a misleading 'no traces' on a cold open)."""
+        fut = getattr(self, "_lb_pending", None)
+        return fut is not None and not fut.done()
+
+    def weave_enabled(self) -> bool:
+        """True when Weave tracing is configured (WANDB_API_KEY set)."""
+        try:
+            from backend.observability import is_configured
+            return is_configured()
+        except Exception:
+            return False
+
+    def weave_dashboard_url(self) -> str:
+        """Best URL to the live W&B Weave dashboard for this project, for the MONITOR
+        tab's click-to-open. Derives entity/project from the live client, falling back
+        to env vars, then to a project search."""
+        import os
+        project = os.getenv("WEAVE_PROJECT") or "company-ai"
+        entity = os.getenv("WANDB_ENTITY") or os.getenv("WEAVE_ENTITY") or ""
+        try:
+            from backend.observability import init_weave
+            client = init_weave()
+            pid = getattr(client, "_project_id", "") or getattr(client, "project", "")
+            if "/" in str(pid):                       # "entity/project"
+                entity, project = str(pid).split("/", 1)
+            else:
+                entity = entity or getattr(client, "entity", "") or entity
+        except Exception:
+            pass
+        if entity:
+            return f"https://wandb.ai/{entity}/{project}/weave"
+        return f"https://wandb.ai/search?q={project}"
 
     def send(self, agent_id: str, text: str) -> bool:
         """Schedule a message on a worker thread. False if one is still pending.
@@ -432,8 +632,98 @@ class CompanyLink:
             return None
 
     def terminal_history(self) -> list[Message]:
-        """The terminal transcript (Message-like rows with .role/.content)."""
+        """The active session's transcript (Message-like rows with .role/.content)."""
         return self._terminal().history()
+
+    # --- terminal chat sessions -------------------------------------------
+
+    def terminal_sessions(self) -> list:
+        """All terminal conversations (newest-used first), each {id,title,active}."""
+        return self._terminal().list_sessions()
+
+    def terminal_new_session(self):
+        """Start a fresh conversation and make it active; None if a turn is running."""
+        if self.terminal_busy():
+            return None
+        return self._terminal().new_session()
+
+    def terminal_switch_session(self, sid: int) -> bool:
+        """Make a session active. False if a turn is running or the id is unknown."""
+        if self.terminal_busy():
+            return False
+        return self._terminal().switch_session(sid)
+
+    def terminal_delete_session(self, sid: int) -> bool:
+        """Delete a session + its transcript. False if a turn is running."""
+        if self.terminal_busy():
+            return False
+        return self._terminal().delete_session(sid)
+
+    # --- 24/7 operations (terminal OPS tab) -------------------------------
+    # Read + govern the always-on worker's data: scheduled jobs, run history, and
+    # the approval queue. These touch worker rows, not the live terminal turn, so
+    # they're safe to call even while a terminal message is streaming.
+
+    def terminal_jobs(self) -> list:
+        """All scheduled/recurring autonomous jobs (newest first)."""
+        return self.store.list_jobs()
+
+    def terminal_runs(self, limit: int = 40) -> list:
+        """Recent autonomous run history (done/error/running)."""
+        return self.store.list_runs(limit=limit)
+
+    def terminal_approvals(self) -> list:
+        """Risky tool calls a run paused on, waiting for the CEO's approve/reject."""
+        return self.store.list_approvals()
+
+    def terminal_agent_name(self, agent_id: str) -> str:
+        a = self.store.get(agent_id)
+        return a.name if a else agent_id
+
+    def terminal_toggle_job(self, job_id: str, enabled: bool) -> None:
+        self.store.set_job_enabled(job_id, enabled)
+
+    def terminal_run_job_now(self, job_id: str) -> bool:
+        """Queue a scheduled job to run immediately. False if the id is unknown."""
+        j = self.store.get_job(job_id)
+        if j is None:
+            return False
+        from backend.scheduling import iso_utc, utc_now
+        self.store.enqueue_manual_run(j.agent_id, j.instruction, iso_utc(utc_now()))
+        return True
+
+    def terminal_decide_approval(self, approval_id: str, decision: str) -> None:
+        """Resolve a pending approval: decision is 'approved' or 'rejected'."""
+        self.store.decide_approval(approval_id, decision)
+
+    def terminal_retry_run(self, run_id: str) -> None:
+        self.store.retry_run(run_id)
+
+    def terminal_pending_tasks(self) -> int:
+        """How many fire-and-forget tasks are still working in the background.
+
+        Returns the cached value IMMEDIATELY (never touches Redis on the caller's
+        thread) and schedules an off-thread refresh at most every ~1.5s, so polling
+        this every frame from the render loop costs nothing. 0 if the firehose is
+        unavailable."""
+        import threading
+        import time as _t
+        now = _t.monotonic()
+        if now - self._pend_at > 1.5 and not self._pend_busy:
+            self._pend_busy = True
+            self._pend_at = now
+
+            def _refresh() -> None:
+                try:
+                    from backend import task_queue
+                    self._pend_count = int(task_queue.pending())
+                except Exception:
+                    self._pend_count = 0
+                finally:
+                    self._pend_busy = False
+
+            threading.Thread(target=_refresh, name="pending-poll", daemon=True).start()
+        return self._pend_count
 
     def terminal_append(self, role: str, content: str) -> None:
         """Append a line to the terminal transcript without a model turn (used by the
@@ -449,26 +739,76 @@ class CompanyLink:
         """Drop the pending hire proposal (CEO confirmed or cancelled it)."""
         self._terminal().pending_hire = None
 
-    def terminal_send(self, text: str) -> bool:
-        """Schedule a terminal turn on a worker thread. False if one's pending.
+    def terminal_employees(self) -> list:
+        """Hired employees as lightweight {id,name,role} dicts — for the terminal's
+        @-mention picker (and any other roster autocomplete)."""
+        return [{"id": a.id, "name": a.name, "role": a.role}
+                for a in self.store.list_agents()]
 
-        The CEO's line is persisted synchronously here (so the panel can echo it
-        immediately and it's durable before the possibly-minutes-long run), then
-        the worker streams steps/tokens exactly like a 1:1 chat.
-        """
-        if self.is_busy(TERMINAL_ID):
+    def terminal_send(self, text: str, mentions=None) -> bool:
+        """Accept a directive WITHOUT blocking — the whole point of the terminal.
+
+        The CEO's line is echoed + persisted immediately, then the turn is QUEUED and
+        a background pump runs queued turns one at a time. The input is never locked:
+        you can fire message after message and replies land in the log as they finish.
+        `mentions` (employees the CEO @-tagged) ride along as hard delegation targets.
+        Always returns True (an empty message is ignored)."""
+        text = text.strip()
+        if not text:
             return False
-        term = self._terminal()
-        term.persist_user(text)
-        steps: queue.Queue = queue.Queue()
-        tokens: queue.Queue = queue.Queue()
-        self._steps[TERMINAL_ID] = steps
-        self._tokens[TERMINAL_ID] = tokens
-        self._pending[TERMINAL_ID] = self._pool.submit(
-            term.send, text, persist_user=False,
-            on_step=steps.put, on_token=tokens.put,
-        )
+        self._terminal().persist_user(text)   # echo now, durable before the run
+        self._term_q.put((text, list(mentions or [])))
+        self._ensure_term_pump()
         return True
+
+    def _ensure_term_pump(self) -> None:
+        """Start the terminal pump thread if it isn't already draining the queue."""
+        with self._term_lock:
+            if self._term_pump is not None and self._term_pump.is_alive():
+                return
+            self._term_pump = threading.Thread(
+                target=self._term_pump_loop, name="terminal-pump", daemon=True)
+            self._term_pump.start()
+
+    def _term_pump_loop(self) -> None:
+        """Run queued directives sequentially (coherent context), streaming each
+        turn's steps/tokens through the shared TERMINAL_ID queues the panel polls."""
+        term = self._terminal()
+        steps = self._steps.setdefault(TERMINAL_ID, queue.Queue())
+        tokens = self._tokens.setdefault(TERMINAL_ID, queue.Queue())
+        while True:
+            # Atomically decide whether to take the next item or retire the pump, so
+            # a concurrent terminal_send() either feeds us or starts a fresh pump.
+            with self._term_lock:
+                if self._term_q.empty():
+                    self._term_pump = None
+                    return
+                text, mentions = self._term_q.get_nowait()
+            self._term_busy = True
+            try:
+                term.send(text, persist_user=False,
+                          on_step=steps.put, on_token=tokens.put, mentions=mentions)
+            except Exception as exc:
+                try:
+                    term.append("ai", f"[error: {exc}]")
+                except Exception:
+                    pass
+            finally:
+                self._term_busy = False
+                self._term_gen += 1        # a reply (or error) landed → panel refreshes
+
+    def terminal_busy(self) -> bool:
+        """True while a directive is running or still queued (drives the indicator)."""
+        return self._term_busy or not self._term_q.empty()
+
+    def terminal_queued(self) -> int:
+        """How many directives are waiting behind the one currently running."""
+        return self._term_q.qsize()
+
+    def terminal_generation(self) -> int:
+        """Counter that bumps each time a turn finishes; the panel re-reads the log
+        when it changes (instead of polling a single in-flight future)."""
+        return self._term_gen
 
     # --- movement-policy planning (non-blocking) --------------------------
 
@@ -520,6 +860,27 @@ class CompanyLink:
             return {"approved": False, "amount": 0, "program": "Small Business Grant",
                     "feedback": "The board couldn't process your application. Try again."}
 
+    # --- customer judge (LLM → monthly revenue, non-blocking) -------------
+
+    def request_customers(self, company: dict, team: int = 0) -> bool:
+        """Kick off the monthly customer-panel revenue judgment (off-thread). False
+        if one is already running."""
+        if self._customers is not None and not self._customers.done():
+            return False
+        from backend.customer import judge_revenue
+        self._customers = self._customer_pool.submit(judge_revenue, dict(company or {}), int(team))
+        return True
+
+    def poll_customers(self) -> dict | None:
+        """Return {score, revenue, buzz} once the panel has judged, else None."""
+        if self._customers is None or not self._customers.done():
+            return None
+        fut, self._customers = self._customers, None
+        try:
+            return fut.result()
+        except Exception:
+            return None
+
     # --- Composio connections (in-game OAuth) -----------------------------
 
     def request_composio_status(self, agent_id: str, toolkits) -> bool:
@@ -567,6 +928,7 @@ class CompanyLink:
         self._plan_pool.shutdown(wait=False, cancel_futures=True)
         self._composio_pool.shutdown(wait=False, cancel_futures=True)
         self._grant_pool.shutdown(wait=False, cancel_futures=True)
+        self._customer_pool.shutdown(wait=False, cancel_futures=True)
         # Tear down any Daytona sandbox a Software Engineer agent spun up.
         try:
             from backend.daytona_tools import shutdown as daytona_shutdown

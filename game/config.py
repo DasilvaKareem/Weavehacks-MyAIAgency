@@ -14,7 +14,7 @@ TARGET_FPS = 60
 # You start from NOTHING: $0, no office, no team. Everything is earned — early
 # to-dos pay out a little seed money so you can afford your first lease.
 STARTING_CASH = 0
-HIRE_COST = 2_000
+HIRE_COST = 1_000
 
 # --- Office grid (in tiles/metres; characters are ~1.8m tall) ---
 TILE = 1.0
@@ -104,7 +104,9 @@ HAIRSTYLES = [
     ("Default", None),
     ("Short", "Casual_Male.gltf"),
     ("Tousled", "Casual3_Male.gltf"),
-    ("Rugged", "Cowboy_Male.gltf"),
+    ("Rugged", "Viking_Male.gltf"),  # NOT Cowboy_Male: its head is a hat (separate
+                                     # Hat* meshes); its "Hair" mesh is just the wisp
+                                     # under the brim — borrowing it renders ~nothing.
     ("Ponytail", "Ninja_Female.gltf"),
     ("Long", "Kimono_Female.gltf"),
     ("Bald", "bald"),

@@ -23,7 +23,7 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle, dealership, fonts
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle, dealership, npcs, fonts
 from game import park as parkmod
 from game.park import Park, load_lots as load_park, block_pos
 from game.shop import ShopPanel, load_catalog
@@ -48,6 +48,7 @@ from game.menu import MainMenu
 from game.company_link import CompanyLink
 from game.chat_panel import ChatPanel
 from game.terminal_panel import TerminalPanel
+from game.office_radar import OfficeRadarPanel
 from game.drive_panel import DrivePanel
 from game.jobs_panel import JobsPanel
 from game.meeting_link import MeetingLink
@@ -120,50 +121,54 @@ class Game:
         self.pedestrians = Pedestrians()              # ambient sidewalk crowd (park)
         # Driving is gated behind OWNERSHIP: the CEO can't just hop in a car, they
         # have to buy one at the Auto Mall first (the door stays locked until then).
-        #   • self.dealership — a showroom of translucent "ghost" cars one block east
-        #     of spawn (block 11,9 is building-free), each a model + price.
+        #   • self.dealership — the Auto Mall: a showroom building + a paved lot of
+        #     cars out on the NE edge (parkmod.AUTO_MALL_ADDR), the front rows the
+        #     translucent "ghost" buyables, the back row decorative stock.
         #   • self.owned_car — the model basename you've bought, or None.
         #   • self.car — the drivable ride; only real once you own one (positioned at
         #     the showroom slot you purchased). F to drive, F again to step out.
-        self.dealership = dealership.Dealership(*block_pos(11, 9))
+        self.dealership = dealership.Dealership(*block_pos(*parkmod.AUTO_MALL_ADDR))
+        self.park.set_auto_mall(self.dealership)   # so the showroom blocks movement
         self.owned_car: str | None = None
         self.car = vehicle.DrivableCar(model="SportsCar")   # pose set on purchase
         self.driving = False
         self._deal_spin = 0.0                               # turntable angle for ghosts
+        # Phone-summoned AI taxi: a flat-fare ride that cinematically pulls up, picks
+        # the CEO up and drops them at any city POI. None when idle; a ride-state dict
+        # while a cab is en route / driving (see _summon_taxi / _update_taxi_ride).
+        self.TAXI_FARE = 10
+        self._taxi_ride: dict | None = None
         # Robin, your co-founder-to-be: stands a few steps ahead of the park spawn
         # with a "!" overhead, so your very first move is to walk up and pitch them
         # (the coffee meeting). Built once here; reused as the actor inside the cafe
         # quest building (see _spawn_quest_actor).
-        self.robin = Character(name=COFOUNDER_NAME, role="Co-founder", x=0.0, z=0.0,
-                               color=pr.Color(90, 210, 230, 255), dept="Founder",
-                               model="Suit_Male.gltf", yaw=180.0)
-        # Give the named NPCs a real appearance, else the model's raw "Skin"
-        # material (~black) shows. Fixed looks so they're recognizable each run.
-        roster.apply_look(self.robin, {"skin_idx": 2, "hair_idx": 2, "eye_idx": 1, "suit_idx": 2})
+        # All named story characters come from one registry (game/npcs.py): it
+        # owns who they ARE (name/role/model/fixed appearance/voice), so there's a
+        # single place to see and restyle the cast instead of ~80 lines of inline
+        # boilerplate here. Their quest logic and state stay below. `_npcs`/
+        # `_npc_voices` are keyed by registry id; the historical attribute names
+        # (self.robin, self.lady=Mae, self.civilian=Walter, self.pet=Biscuit,
+        # self.busker=Río) are kept as aliases so nothing else needs to change.
+        self._npcs, self._npc_voices = npcs.build_named()
+        self.robin = self._npcs["robin"]
+        self._robin_voice = self._npc_voices["robin"]   # he acks the toggle aloud
         # Once you've won Robin over, you can tell him (Nokia → Co-founder → "Follow
         # me") to walk with you — trailing you through the office AND out in the park.
         # Toggled from the phone; the per-frame trailing lives in _update_companion.
         self.robin_following = False
-        self._robin_voice = voice.pick_voice(COFOUNDER_NAME)   # he acks the toggle aloud
         # Your first intern: hangs out in a city park (Founders Green) with a "!"
         # overhead. Walk up + E in the park to take them on — they join the company
         # for free. Positioned/bound to its park in _enter_park; gated on the
         # "intern" quest so they vanish once hired (and stay gone after a restart).
-        self.intern = Character(name="Eager Intern", role="Intern", x=0.0, z=0.0,
-                                color=pr.Color(150, 210, 120, 255), dept="Operations",
-                                model="Casual_Male.gltf", yaw=0.0)
-        roster.apply_look(self.intern, {"skin_idx": 4, "hair_idx": 0, "eye_idx": 1})
+        self.intern = self._npcs["intern"]
         self._intern_park = None       # bound to a GreenSpace in _enter_park
         # Bob, your childhood friend: waiting right where you spawn the first time you
         # arrive in the city, with a "!" overhead. Walk up + E and he welcomes you back
         # and presses $10,000 of seed money into your hand — a one-time gift, gated on
         # the persistent `bob_gift` flag so he's gone afterward (and stays gone after a
         # restart). _bob_done is loaded from the store once the link exists.
-        self.bob = Character(name="Bob", role="Old Friend", x=0.0, z=0.0,
-                             color=pr.Color(225, 170, 120, 255), dept="Friend",
-                             model="Casual2_Male.gltf", yaw=180.0)
-        roster.apply_look(self.bob, {"skin_idx": 2, "hair_idx": 2, "hair_style": 1, "eye_idx": 2})
-        self._bob_voice = voice.pick_voice("Bob")
+        self.bob = self._npcs["bob"]
+        self._bob_voice = self._npc_voices["bob"]
         self._bob_done = False         # set from link.load_flag("bob_gift") below
         self._bob_talk = None          # current line index while chatting, else None
         self._bob_mode = "welcome"     # which conversation is active: welcome | rescue
@@ -174,11 +179,8 @@ class Game:
         # Mae, the small-business desk: stands in a city park. Talk to her (walk up +
         # E) to unlock the affordable Starter Office (simple lobby + one wing, no
         # elevator, $200/mo). Gated on the persistent `starter_office` flag.
-        self.lady = Character(name="Mae", role="Small-Biz Desk", x=0.0, z=0.0,
-                              color=pr.Color(210, 150, 190, 255), dept="Civic",
-                              model="Suit_Female.gltf", yaw=180.0)
-        roster.apply_look(self.lady, {"skin_idx": 3, "hair_idx": 3, "hair_style": 2, "eye_idx": 1})
-        self._lady_voice = voice.pick_voice("Mae")
+        self.lady = self._npcs["mae"]
+        self._lady_voice = self._npc_voices["mae"]
         self._starter_unlocked = False     # set from link.load_flag below
         self._lady_talk = None             # current line index while chatting, else None
         self._park_toast = ""              # transient park message (e.g. "locked — meet Mae")
@@ -189,30 +191,32 @@ class Game:
         # it gets done (gold beacon over the building + an on-screen arrow). Holds the
         # selected task key; the target world spot is re-resolved live each frame.
         self._guide_key = None
+        # A free "pin" target (x, z, label) set from the phone Map — wayfind to any POI,
+        # not just a to-do. Same gold beacon/arrow; auto-clears when you arrive.
+        self._guide_point = None
         # Civilian side-quest: Walter's lost pug, Biscuit. Talk to Walter in a park,
         # go find Biscuit in another park, bring him back for a cash reward. Walter is
         # human (apply_look); Biscuit is an animal model (its own fur material).
-        self.civilian = Character(name="Walter", role="Resident", x=0.0, z=0.0,
-                                  color=pr.Color(200, 200, 120, 255), dept="Civic",
-                                  model="Casual3_Male.gltf", yaw=180.0)
-        roster.apply_look(self.civilian, {"skin_idx": 1, "hair_idx": 5, "hair_style": 0, "eye_idx": 0})
-        self.pet = Character(name="Biscuit", role="Pug", x=0.0, z=0.0,
-                             color=pr.Color(210, 180, 140, 255), dept="", model="Pug.gltf")
-        self._civilian_voice = voice.pick_voice("Walter")
+        self.civilian = self._npcs["walter"]
+        self.pet = self._npcs["biscuit"]
+        self._civilian_voice = self._npc_voices["walter"]
         self._pet_done = False             # set from link.load_flag("pet_quest") below
         self._pet_stage = 0                # 0 not started · 1 searching · 2 returning · 3 done
         self._civilian_talk = None         # current line index while chatting, else None
         # Civilian side-quest 2: Río the busker's stolen guitar. Talk to Río in a park,
         # find the guitar (a drawn prop) stashed in another park, return it for $2,500.
-        self.busker = Character(name="Río", role="Busker", x=0.0, z=0.0,
-                                color=pr.Color(120, 180, 210, 255), dept="Civic",
-                                model="Casual2_Female.gltf", yaw=180.0)
-        roster.apply_look(self.busker, {"skin_idx": 5, "hair_idx": 1, "hair_style": 3, "eye_idx": 2})
-        self._busker_voice = voice.pick_voice("Río")
+        self.busker = self._npcs["rio"]
+        self._busker_voice = self._npc_voices["rio"]
         self._guitar_done = False          # set from link.load_flag("guitar_quest") below
         self._guitar_stage = 0             # 0 offer · 1 searching · 2 returning · 3 done
         self._busker_talk = None           # current line index while chatting, else None
         self._guitar_pos = (0.0, 0.0)      # world (x,z) of the stashed guitar (set in _enter_park)
+        # Vivian, the bank manager: stands outside First City Bank and presses a
+        # one-time $200,000 grant into your hand on walk-up + E (no quest, no
+        # strings). Gated on the persistent `bank_grant` flag so she's done after.
+        self.banker = self._npcs["banker"]
+        self._banker_voice = self._npc_voices["banker"]
+        self._bank_grant_done = False      # set from link.load_flag("bank_grant") below
         # The building whose interior is currently active (starts at HQ).
         self.current_building = next((b for b in self.park.buildings if b.status == "hq"),
                                      self.park.buildings[0] if self.park.buildings else None)
@@ -269,6 +273,7 @@ class Game:
                 sx, sz = self.park.spawn
                 self.car.x, self.car.z = sx + 4.5, sz
         self._saved_owned_car = self.owned_car
+        self._park_car_at_home_garage()            # own a car + garage home → it waits there
         self.calendar.load_state(self.link.load_calendar())  # restore the in-game date
         self.season.set_day(self.calendar.day)               # foliage matches the restored date
         self._bob_done = self.link.load_flag("bob_gift")   # already got the welcome gift?
@@ -280,6 +285,7 @@ class Game:
             starter.locked = False                  # already met Mae: lease it freely
         self._pet_done = self.link.load_flag("pet_quest")   # already returned Biscuit?
         self._guitar_done = self.link.load_flag("guitar_quest")   # already returned the guitar?
+        self._bank_grant_done = self.link.load_flag("bank_grant")   # already took Vivian's grant?
         try:                                                # backdrop tenants already tipped
             self._biz_paid = set(json.loads(self.link.store.get_setting("biz_paid") or "[]"))
         except Exception:
@@ -289,6 +295,7 @@ class Game:
         self._free_hire = (self.link.load_flag("agency_free_hire_armed")
                            and not self.link.load_flag("agency_free_hire_used"))
         self._last_persist = 0.0
+        self._rev_timer = 0.0          # real-time accumulator for recurring customer revenue
         self._saved_cash = int(self.cash)
         self._saved_day = self.calendar.day
         self._saved_leases = {b.id for b in self.park.buildings if b.status == "leased"}
@@ -316,12 +323,21 @@ class Game:
         self.chat = ChatPanel(self.link)
         self.terminal = TerminalPanel(self.link)   # CEO Desk: the Global AI Terminal
         self.terminal.on_hire = self._terminal_hire  # confirm + budget-check AI-proposed hires
+        self.office_radar = OfficeRadarPanel()     # K: live who's-in-which-room, from Redis geo
+        self._office_snapshot: list = []           # room summary kept fresh by _geo_worker
+        self._geo_entities = None                  # latest position snapshot for the geo worker
+        self._geo_thread = None                    # background Redis geo sync thread
         self.shop = ShopPanel(load_catalog())
         self.hire_catalog = load_agents()          # marketplace models for the phone Hire app
         self.meeting_link = MeetingLink(self.link.store)
         self.meeting = MeetingPanel(self.meeting_link, self.agents)
         self.drive = DrivePanel(self.link.store)   # company file system browser
         self.jobs = JobsPanel(self.link.store)     # schedules, approvals, activity
+        # Fire the always-on worker in-process so scheduled 24/7 jobs (set up via the
+        # terminal's OPS tab or the AI) actually run while you play. No-op if disabled
+        # (COMPANY_AI_WORKER=0) or an external worker already holds the db lock.
+        from backend.worker_service import start_background as _start_worker
+        _start_worker(self.link.store.db_path)
         self.coordinator = CoordinatorLink()       # co-founder = the company graph
         # Inbox: messages that come TO the CEO — agents' finished work + status,
         # and the park businesses (NPCs) reaching out. The feeder drips ambient
@@ -376,12 +392,16 @@ class Game:
         clock_bridge = SimpleNamespace(state=self._clock_state)
         # To-do guide: the phone hands a task key to start(); the game lights up the
         # city toward where it's done and tells the phone whether to close + navigate.
-        guide_bridge = SimpleNamespace(start=self._start_guide)
+        guide_bridge = SimpleNamespace(start=self._start_guide, point=self._guide_to_point)
+        # Taxi app: the phone hands a destination POI to summon(); the game charges the
+        # fare and kicks off the pickup→ride→dropoff cinematic out in the park.
+        taxi_bridge = SimpleNamespace(summon=self._summon_taxi, fare=self.TAXI_FARE)
         self.phone = PhonePanel(self.link, self.coordinator,
                                 lambda: self.all_agents, self.inbox, self.taskboard,
                                 hire=hire_bridge, follow=follow_bridge,
                                 citymap=citymap_bridge, clock=clock_bridge,
-                                guide=guide_bridge, locate=self._agent_location)
+                                guide=guide_bridge, locate=self._agent_location,
+                                taxi=taxi_bridge)
         self.inbox.post("Company.AI",
                         "Welcome! Your team and the neighborhood reach you here. "
                         "Open the phone (N) and tap a message to read it.",
@@ -389,8 +409,10 @@ class Game:
         self._buy_seq = 0
         self.used_names: set[str] = set()
 
-        self.bot_ctx = BotContext(nav=None, ceo=ceo, agents=self.agents)
+        self.bot_ctx = BotContext(nav=None, ceo=ceo, agents=self.agents,
+                                  on_depart=self._on_bot_depart)
         self.director = Director(self.agents)
+        self._offscreen_acc = 0.0                  # slow-tick accumulator for off-room bot life
         self.chat.command_handler = self.handle_chat_command   # NL movement commands in chat
         self._chatting: Character | None = None   # bot held still while the CEO talks to it
         self._planned: set[str] = set()           # agent ids whose policy is applied/requested
@@ -468,6 +490,9 @@ class Game:
         # Río's stolen-guitar quest resets too.
         self._guitar_done, self._guitar_stage, self._busker_talk = False, 0, None
         self.link.set_flag("guitar_quest", False)
+        # Vivian's one-time bank grant is available again in the new city.
+        self._bank_grant_done = False
+        self.link.set_flag("bank_grant", False)
         # TalentWorks' one-time free hire is available again in the new city.
         self._free_hire = False
         self.link.set_flag("agency_free_hire_armed", False)
@@ -490,7 +515,8 @@ class Game:
         self.selected = -1
         self.park = Park(load_park())                 # fresh leases (only HQ)
         # Fresh city: no car owned, a full ghost showroom again.
-        self.dealership = dealership.Dealership(*block_pos(11, 9))
+        self.dealership = dealership.Dealership(*block_pos(*parkmod.AUTO_MALL_ADDR))
+        self.park.set_auto_mall(self.dealership)
         self.owned_car, self._saved_owned_car = None, None
         self.car = vehicle.DrivableCar(model="SportsCar")
         self.driving = False
@@ -639,6 +665,38 @@ class Game:
         if self.taskboard.refresh(stats):
             self.link.save_tasks(self.taskboard.done)
 
+    # Customers won't pay until you've actually built something: a defined product
+    # plus this many main to-dos done. After that, revenue recurs every month and the
+    # LLM panel decides how much (its "satisfaction").
+    REVENUE_MIN_TODOS = 5
+
+    def _revenue_unlocked(self) -> bool:
+        """True once there's a product to sell AND enough main to-dos are done that
+        customers will start buying (then revenue recurs on the monthly clock)."""
+        if not any(self.company.get(k) for k in ("pitch", "name", "company_name")):
+            return False
+        done_main = sum(1 for t in tasks.TASKS
+                        if not t.optional and self.taskboard.is_done(t.key))
+        return done_main >= self.REVENUE_MIN_TODOS
+
+    def _collect_customer_revenue(self) -> None:
+        """Bank the monthly sales once the customer-judge panel returns. The first
+        dollar also ticks the 'Make your first revenue' to-do."""
+        v = self.link.poll_customers()
+        if not v or int(v.get("revenue", 0)) <= 0:
+            return
+        amt = int(v["revenue"])
+        self.cash += amt
+        self._persist_state(force=True)
+        first = self.taskboard.complete("revenue")   # first revenue ticks the to-do
+        if first:
+            self.link.save_tasks(self.taskboard.done)
+        subject = (f"🎉 First paying customers · +${amt:,}" if first
+                   else f"Monthly revenue · +${amt:,}")
+        self.inbox.post("Sales", f"Customers spent ${amt:,} this month.  "
+                        f"“{v.get('buzz', '')}”  (market score {v.get('score', 0)}/100)",
+                        kind="system", subject=subject, ts=pr.get_time())
+
     def _apply_ceo_profile(self, p: dict) -> None:
         """Stamp a saved/just-chosen CEO profile onto the player character."""
         ceo = self.player.ch
@@ -720,6 +778,7 @@ class Game:
             agent.eye_tone = roster.palette_color(config.EYE_COLORS, appearance.get("eye_idx", 0))
             agent.outfit_tone = roster.palette_color(config.SUIT_COLORS, appearance.get("suit_idx", 0))
             agent.hair_style = appearance.get("hair_style", 0)
+        agent.current_room = home_room   # starts in its home wing; diverges once it roams
         agent.brain = BotBrain(agent, default_policy(agent, (0.0, 0.0)), self.bot_ctx)
         self.all_agents.append(agent)
         self.used_names.add(name)
@@ -730,19 +789,56 @@ class Game:
         single source of truth) so there's no parallel list that can drift."""
         return [a.brain for a in self.agents if a.brain is not None]
 
+    @staticmethod
+    def _room_of(a) -> str | None:
+        """Where an agent actually is right now — its roamed-to room, else its home
+        wing. (current_room only diverges once a bot walks off via a portal.)"""
+        return a.current_room or a.home_room
+
+    @property
+    def _in_own_office(self) -> bool:
+        """True only inside your real office (HQ or a leased building). Quest
+        buildings and your homes are NOT staffed by your hired employees, so the
+        roster must never be shown or wandered into them."""
+        return (self._quest_building is None
+                and self.current_building is not None
+                and not getattr(self.current_building, "home", False))
+
     def _show_room(self, room_key: str) -> None:
-        """Make the agents homed in `room_key` the active set: seat them at this
+        """Make the agents currently IN `room_key` the active set: seat them at this
         room's desks and swap them into the live lists (mutated in place so
         bot_ctx / Director / the meeting panel keep working). Lobbies show none."""
         plan = self.plan
-        members = [a for a in self.all_agents if a.home_room == room_key]
+        # Keep the brains pointed at this building's portal graph so bots can route
+        # to other rooms/floors and depart through doorways/elevators.
+        self.bot_ctx.interior = self.interior
+        self.bot_ctx.active_room = room_key
+        # Only your REAL office (HQ or a leased building) is staffed by your hired
+        # employees. Quest buildings and your homes are not — re-homing the roster
+        # into them dumped every agent you'd hired into the room and buried the
+        # building's own NPC. Show just the CEO there (the quest NPC is added by
+        # _spawn_quest_actor), and don't touch the roster's room state.
+        if not self._in_own_office:
+            self.agents[:] = []
+            self.characters[:] = [self.player.ch]
+            self.selected = -1
+            return
+        # A roamed-to room from a since-rebuilt interior would strand a bot; snap any
+        # such stale current_room back to a valid room (its home wing, else here).
+        rooms = self.interior.rooms
+        for a in self.all_agents:
+            if a.current_room is not None and a.current_room not in rooms:
+                a.current_room = a.home_room if a.home_room in rooms else room_key
+        members = [a for a in self.all_agents if self._room_of(a) == room_key]
         self.agents[:] = members          # held by reference by bot_ctx/Director/meeting
         self.characters[:] = [self.player.ch] + members
         cap = plan.desk_capacity()
         for i, a in enumerate(members):
+            a.desk_slot = i if i < cap else -1
             a.desk = plan.grid_to_world(*plan.desk_slot(i)) if i < cap else None
             b = a.brain
             b.cmd, b.state, b._seated, b._route_i = None, "work", False, 0
+            b._travel_dest = None
             b.follower.clear()
             names = plan.zone_names()
             b.policy.route = [z for z in b.policy.route if z in names] or names[:3]
@@ -778,13 +874,107 @@ class Game:
             seats[z.name] = ((lx, lz + 0.1), 0.0)
         self.bot_ctx.seats = seats
 
+    # -- cross-room travel: bots come and go through portals -------------------
+    def _reflow_active_room(self) -> None:
+        """Recompute desks for whoever's in the active room right now (members may
+        have just left or arrived), keeping each one's stable desk_slot so the
+        people who stayed don't shuffle chairs, then rebuild nav."""
+        plan = self.plan
+        for a in self.agents:
+            a.desk = plan.grid_to_world(*plan.desk_slot(a.desk_slot)) \
+                if a.desk_slot >= 0 else None
+        self._rebuild_nav()
+
+    def _on_bot_depart(self, ch, dest_room: str) -> None:
+        """A bot reached a doorway/elevator and walks out of the active room toward
+        `dest_room`: drop it from the live set so it vanishes (it's on another
+        floor now). Called from the brain on arrival at the portal."""
+        if dest_room not in self.interior.rooms:
+            return
+        ch.current_room = dest_room
+        ch.desk = ch.seat = None
+        ch.desk_slot = -1
+        if ch in self.agents:
+            self.agents.remove(ch)
+        if ch in self.characters:
+            self.characters.remove(ch)
+        if self.selected >= len(self.agents):
+            self.selected = -1
+        self._reflow_active_room()
+
+    def _inbound_point(self) -> tuple:
+        """Where an arriving bot appears in the active room — prefer the elevator,
+        else a doorway, else room center (so they 'step out' somewhere sensible)."""
+        order = {interior.ELEVATOR: 0, interior.DOORWAY: 1, interior.EXIT: 2}
+        ports = sorted(self.room.portals, key=lambda p: order.get(p.kind, 9))
+        if ports:
+            return ports[0].pos
+        return self.plan.grid_to_world(self.plan.cols / 2.0, self.plan.rows - 2)
+
+    def _bot_arrive(self, ch) -> None:
+        """Bring an off-screen bot INTO the active room: it appears at a portal and
+        walks to a free desk (or the meeting area if the room is full)."""
+        ch.current_room = self.room.key
+        used = {a.desk_slot for a in self.agents if a.desk_slot >= 0}
+        cap = self.plan.desk_capacity()
+        ch.desk_slot = next((s for s in range(cap) if s not in used), -1)
+        ch.desk = self.plan.grid_to_world(*self.plan.desk_slot(ch.desk_slot)) \
+            if ch.desk_slot >= 0 else None
+        self.agents.append(ch)
+        self.characters.append(ch)
+        self._rebuild_nav()                         # nav now blocks the new desk + sets home
+        ch.x, ch.z = self._inbound_point()          # ...then drop them at the door
+        if ch.desk is None:                          # no desk here (e.g. a lobby): loiter mid-room
+            ch.seat = None
+            ch.brain.policy.home = self.bot_ctx.nav.snap_point(*self.plan.primary_meeting())
+        b = ch.brain
+        b.cmd, b.state, b._seated, b._travel_dest = None, "work", False, None
+        b.follower.clear()
+        b._go_work()                                # walk in from the door to the desk
+        b.say("Hey, just came up to join you all.")
+
+    def _update_offscreen_life(self, dt: float) -> None:
+        """Slow tick for agents NOT in the active room: drift them between rooms so
+        the building feels staffed, and occasionally walk one into the active room
+        (the visible 'someone steps off the elevator'). No navgrid work off-screen."""
+        if self.interior is None or len(self.interior.rooms) < 2:
+            return
+        if not self._in_own_office:        # quest buildings / homes aren't staffed
+            return
+        self._offscreen_acc += dt
+        if self._offscreen_acc < 3.0:
+            return
+        self._offscreen_acc = 0.0
+        active = self.room.key
+        offscreen = [a for a in self.all_agents
+                     if a.brain is not None and a.status != "working"
+                     and self._room_of(a) != active
+                     and (a.current_room or a.home_room) in self.interior.rooms]
+        if not offscreen:
+            return
+        arrived = False
+        for a in offscreen:
+            r = random.random()
+            if not arrived and r < 0.05 + 0.06 * a.brain.policy.explore:
+                self._bot_arrive(a)                 # one arrival per tick, max
+                arrived = True
+            elif r < 0.20:
+                # Drift elsewhere abstractly — usually drift home so floors don't drain.
+                here = a.current_room or a.home_room
+                if random.random() < 0.5 and a.home_room:
+                    a.current_room = a.home_room
+                else:
+                    others = self.interior.other_rooms(here)
+                    if others:
+                        a.current_room = random.choice(others)
+
     # -- movement-policy authoring (LLM, off-thread) --------------------------
     def _apply_policy(self, brain, data: dict) -> None:
         """Merge an authored policy dict into a live BotPolicy (keeps `home`)."""
         if brain is None or not data:
             return
         p = brain.policy
-        for knob in ("sociability", "restlessness", "focus"):
+        for knob in ("sociability", "restlessness", "focus", "explore"):
             if knob in data:
                 setattr(p, knob, float(data[knob]))
         if data.get("route"):
@@ -958,6 +1148,8 @@ class Game:
                     nxt += 1
                 a.home_room = dept_wing[d]
         for a in self.all_agents:                 # persist
+            if not a.current_room or a.current_room not in valid:
+                a.current_room = a.home_room       # default the live room to the home wing
             if a.home_room and a.backend_id:
                 self.link.store.set_home_room(a.backend_id, a.home_room)
 
@@ -1179,21 +1371,44 @@ class Game:
                             kind="system", subject="✓ Take on your first intern",
                             ts=pr.get_time())
 
+    # -- Vivian, the bank manager (one-time no-strings grant) -----------------
+    BANK_GRANT = 200_000
+
+    def _banker_grant(self) -> None:
+        """Walk-up + E at First City Bank: hand over $200,000, once. No quest."""
+        if self._bank_grant_done:
+            return
+        self.cash += self.BANK_GRANT
+        self._bank_grant_done = True
+        self.link.set_flag("bank_grant", True)
+        line = (f"On behalf of First City Bank — a ${self.BANK_GRANT:,} grant for "
+                "your company. No paperwork, no questions. Go build something.")
+        self.banker.yaw = math.degrees(math.atan2(
+            self.player.ch.x - self.banker.x, self.player.ch.z - self.banker.z))
+        self._toast(f"💰 Vivian: {line}")
+        voice.speak(line, self._banker_voice)
+        self.inbox.post("First City Bank", f"Approved: a ${self.BANK_GRANT:,} business "
+                        "grant, deposited to your account. No strings attached.",
+                        kind="system", subject=f"Grant approved · +${self.BANK_GRANT:,}",
+                        ts=pr.get_time())
+        self._persist_state(force=True)        # lock in the new balance now
+        self._e_cooldown = 8
+
     # -- Bob, your childhood friend (welcome gift + emergency rescue) ----------
-    BOB_GIFT = 10000
+    BOB_GIFT = 30000
     BOB_LINES = [
         "Hey — look who it is! Welcome back to the city.",
         "I always knew you'd come back to build something of your own. I'm happy for you, truly.",
-        "Starting out's the hard part. Here — take this. Ten thousand bucks to get you going.",
+        "Starting out's the hard part. Here — take this. Thirty thousand bucks to get you going.",
         "No, I insist. Go make it count — I've got high hopes for you.",
     ]
     # When you go flat broke, Bob texts you to meet at a park and spots you cash.
-    BOB_RESCUE_GIFT = 5000
+    BOB_RESCUE_GIFT = 15000
     BOB_RESCUE_PARK_ID = "maple_commons"
     BOB_RESCUE_LINES = [
         "Hey, you made it. I got worried when I heard things had gotten tight.",
         "Listen — nobody builds anything in a straight line. Being broke for a minute doesn't mean you failed.",
-        "I've got you. Here's twenty-five hundred — an emergency stake, friend to friend.",
+        "I've got you. Here's fifteen thousand — an emergency stake, friend to friend.",
         "Pay me back by making it work. Now go — you've got this.",
     ]
 
@@ -1382,7 +1597,7 @@ class Game:
                               pr.Color(220, 150, 195, 255), action)
 
     # -- Walter's lost-pet quest (find Biscuit, return him for a reward) -------
-    PET_REWARD = 2500
+    PET_REWARD = 7500
     PET_NAME = "Biscuit"
     CIVILIAN_PARK_ID = "liberty_square"
     PET_PARK_ID = "sunset_gardens"
@@ -1390,12 +1605,12 @@ class Game:
         "Oh — excuse me! You look kind. I'm in a real spot here.",
         "My little pug, Biscuit, slipped his leash and bolted. Brown coat, very waggy.",
         "Someone said they saw him over by Sunset Gardens. Please — would you bring him home?",
-        "Do this for me and I'll give you $2,500. He's all I've got. Thank you, truly.",
+        "Do this for me and I'll give you $7,500. He's all I've got. Thank you, truly.",
     ]
     CIVILIAN_THANKS_LINES = [
         "Biscuit! Oh — you found him! Come here, boy!",
         "I was sick with worry. I can't believe it — you actually brought him back.",
-        "Here, $2,500 as promised, and then some kindness I can't repay. Bless you.",
+        "Here, $7,500 as promised, and then some kindness I can't repay. Bless you.",
     ]
 
     def _civilian_park(self):
@@ -1499,18 +1714,18 @@ class Game:
                               pr.Color(210, 200, 130, 255), action)
 
     # -- Río's stolen-guitar quest (find the guitar, return it for a reward) ---
-    GUITAR_REWARD = 2500
+    GUITAR_REWARD = 7500
     BUSKER_PARK_ID = "willow_park"
     GUITAR_PARK_ID = "cedar_grove"
     BUSKER_OFFER_LINES = [
         "Hey… you got a kind face. Some lowlife grabbed my guitar while I was playing.",
         "That guitar's how I eat. I saw him bolt toward Cedar Grove and ditch it in the bushes.",
         "I can't leave my pitch or I'll lose it. Could you go grab it for me?",
-        "Bring it back and the $2,500 in my tip jar is yours. Please — it's all I've got.",
+        "Bring it back and the $7,500 in my tip jar is yours. Please — it's all I've got.",
     ]
     BUSKER_THANKS_LINES = [
         "No way — you actually got it back! Let me see her… not a scratch!",
-        "You don't know what this means. Here, the whole jar — $2,500, every cent. You earned it.",
+        "You don't know what this means. Here, the whole jar — $7,500, every cent. You earned it.",
     ]
 
     def _busker_park(self):
@@ -1686,12 +1901,22 @@ class Game:
         if tgt is None:
             return (False, "No place to walk to — do this from your office or phone.")
         self._guide_key = key
+        self._guide_point = None               # a to-do guide overrides any free pin
         title = task.title if task else "your to-do"
         self._toast(f"Guiding you to {tgt[2]} — {title}. Follow the gold marker.")
         return (True, "")
 
+    def _guide_to_point(self, x: float, z: float, label: str) -> bool:
+        """Pin an arbitrary map POI and wayfind to it (gold beacon + arrow), the same
+        way the to-do guide does. Called from the phone Map's 'Pin' soft-key."""
+        self._guide_point = (float(x), float(z), label or "your pin")
+        self._guide_key = None
+        self._toast(f"Pinned {self._guide_point[2]} — follow the gold marker (G to cancel).")
+        return True
+
     def _clear_guide(self) -> None:
         self._guide_key = None
+        self._guide_point = None
 
     def _draw_guide_hud(self, guide) -> None:
         """On-screen help once a to-do guide is on: a top chip with the target +
@@ -1804,6 +2029,18 @@ class Game:
             "Welcome back! Want me to point you to anyone on the team?",
         ])
 
+    def _typing_active(self) -> bool:
+        """True when some panel or text field owns the keyboard, so the global
+        letter hotkeys (T/C/N/K) must NOT also fire while the CEO is typing —
+        otherwise typing a meeting topic slams the phone open, skips the day,
+        toggles the dossier, etc."""
+        return (self.chat.open or self.terminal.open or self.meeting.open
+                or self.drive.open or self.jobs.open or self.phone.capturing
+                or self.dossier.capturing or self.market_panel.open
+                or self.grant_panel.open or self.slot_panel.open
+                or self.farm_panel.open or self._quest_input is not None
+                or self._taxi_ride is not None)
+
     def _greet_at_reception(self) -> None:
         """Once per lobby visit, when the CEO walks within talk range of the
         receptionist, have them greet — a world speech bubble AND aloud."""
@@ -1913,9 +2150,10 @@ class Game:
         for b in self.park.buildings:
             leased = b.status != "available"
             # Your own buildings all share one bright "yours" gold (matches the map
-            # legend) so they read as a group; lease lots are orange.
-            if b.status == "hq":
-                col, kind, label = (255, 222, 120), "hq", b.name
+            # legend) so they read as a group; lease lots are orange. The building you
+            # operate from is flagged as home even if its lot isn't formally leased.
+            if b.status == "hq" or b is self.current_building:
+                col, kind, label = (255, 222, 120), "hq", f"{b.name} (home)"
             elif leased:
                 col, kind, label = (255, 222, 120), "office", b.name
             elif getattr(b, "locked", False):    # gated lot (e.g. Starter Office)
@@ -1965,6 +2203,9 @@ class Game:
             if self._guitar_stage == 1:          # the guitar is out there to be found
                 out.append({"x": self._guitar_pos[0], "z": self._guitar_pos[1],
                             "color": (180, 120, 60), "label": "Stolen guitar", "kind": "friend"})
+        if not self._bank_grant_done:
+            out.append({"x": self.banker.x, "z": self.banker.z, "color": (120, 200, 150),
+                        "label": "Vivian (bank grant)", "kind": "friend"})
         return out
 
     # -- save game (cash + leases) --------------------------------------------
@@ -2063,6 +2304,11 @@ class Game:
             gp = self._guitar_park()
             if gp is not None:
                 self._guitar_pos = (gp.x - 1.5, gp.z + 1.5)
+        # Vivian stands on the sidewalk outside First City Bank until you take the grant.
+        if not self._bank_grant_done:
+            bx, bz = parkmod.block_pos(*parkmod.NPC_ADDR["citybank"])
+            self.banker.x, self.banker.z, self.banker.y = bx + 2.4, bz + 2.4, 0.0
+            self.banker.yaw = 180.0
 
     def _enter_office(self, building=None) -> None:
         # Always arrive in the building's lobby (then ride up to the wings). A new
@@ -2756,6 +3002,257 @@ class Game:
         self.camera.recenter(ceo)
         self._toast("Parked.")
 
+    # -- Phone-summoned AI taxi ----------------------------------------------
+
+    def _summon_taxi(self, dx: float, dz: float, label: str) -> tuple[bool, str]:
+        """Phone Taxi app → hail an AI cab to a city POI for the flat fare. Charges
+        cash up front, then spawns a taxi a few blocks away ON the road grid and
+        starts the pickup→ride→dropoff cinematic — the cab follows real streets in to
+        the CEO. Returns (ok, message) for the phone to show. Refuses if you're broke,
+        already on a ride, or behind your own wheel."""
+        if self._taxi_ride is not None:
+            return False, "A taxi is already on the way."
+        if self.driving:
+            return False, "Step out of your car first."
+        if self.cash < self.TAXI_FARE:
+            return False, f"Not enough cash (need ${self.TAXI_FARE})."
+        ceo = self.player.ch
+        # Already standing on top of the destination? Nothing to ride.
+        if math.hypot(dx - ceo.x, dz - ceo.z) < 4.0:
+            return False, "You're already here."
+        self.cash -= self.TAXI_FARE
+        # Spawn the cab a few blocks up the road the CEO is nearest, so it visibly
+        # rolls in along the street rather than popping in close.
+        rx, rz, pa, ps, on_avenue = self._project_road(ceo.x, ceo.z)
+        if on_avenue:
+            far = max(1, min(parkmod.STREETS - 1, ps + (4 if ps < parkmod.STREETS / 2 else -4)))
+            spawn = (self._ave_x(pa), self._st_z(far))
+        else:
+            far = max(1, min(parkmod.AVENUES - 1, pa + (4 if pa < parkmod.AVENUES / 2 else -4)))
+            spawn = (self._ave_x(far), self._st_z(ps))
+        path = self._road_path(spawn[0], spawn[1], ceo.x, ceo.z)
+        cab = vehicle.DrivableCar(x=path[0][0], z=path[0][1], model="Taxi")
+        cab.y = self.park.ground_y(cab.x, cab.z)
+        if len(path) > 1:                     # face the way it'll first drive
+            cab.yaw = math.degrees(math.atan2(path[1][0] - cab.x, path[1][1] - cab.z)) % 360.0
+        self._taxi_ride = {
+            "phase": "arrive", "t": 0.0, "car": cab,
+            "pickup": (ceo.x, ceo.z), "dest": (float(dx), float(dz)), "label": label,
+            "path": path, "wp": 1, "cam": None,
+        }
+        if self.phone.open:
+            self.phone.close()
+        self._toast(f"Taxi booked to {label} — ${self.TAXI_FARE}. Hang tight…")
+        return True, "Taxi on the way!"
+
+    @staticmethod
+    def _lerp_angle(a: float, b: float, t: float) -> float:
+        """Move angle `a` toward `b` (degrees) the short way round by fraction t."""
+        d = (b - a + 180.0) % 360.0 - 180.0
+        return (a + d * t) % 360.0
+
+    # --- road-grid helpers (taxi follows real streets, like ambient traffic) -
+
+    def _ave_x(self, a: float) -> float:
+        return (a - parkmod.CENTER + 0.5) * parkmod.BLOCK
+
+    def _st_z(self, s: float) -> float:
+        return (s - parkmod.CENTER + 0.5) * parkmod.BLOCK
+
+    def _project_road(self, x: float, z: float):
+        """Nearest point on the road grid to (x,z). Snaps to whichever centre-line
+        (a north-south avenue or an east-west street) is closer, staying on that line.
+        Returns (rx, rz, avenue, street, on_avenue)."""
+        a = max(1, min(parkmod.AVENUES - 1,
+                       round(x / parkmod.BLOCK + parkmod.CENTER - 0.5)))
+        s = max(1, min(parkmod.STREETS - 1,
+                       round(z / parkmod.BLOCK + parkmod.CENTER - 0.5)))
+        rx, rz = self._ave_x(a), self._st_z(s)
+        if abs(x - rx) <= abs(z - rz):
+            return rx, z, a, s, True       # on the avenue (keep z, ride the vertical road)
+        return x, rz, a, s, False          # on the street (keep x, ride the horizontal road)
+
+    def _road_path(self, x1: float, z1: float, x2: float, z2: float) -> list:
+        """An axis-aligned polyline from (x1,z1) to (x2,z2) that travels only along
+        road centre-lines, turning at one or two intersections (a Manhattan route).
+        Both ends are snapped onto the grid so every segment lies on asphalt."""
+        sx, sz, a1, s1, _ = self._project_road(x1, z1)
+        ex, ez, a2, s2, _ = self._project_road(x2, z2)
+        nodes = [(a1, s1)]
+        if a2 != a1:
+            nodes.append((a2, s1))
+        if s2 != s1:
+            nodes.append((a2, s2))
+        pts = [(sx, sz)] + [(self._ave_x(a), self._st_z(s)) for a, s in nodes] + [(ex, ez)]
+        out: list = []
+        for p in pts:                       # drop near-duplicate corners
+            if not out or abs(p[0] - out[-1][0]) + abs(p[1] - out[-1][1]) > 0.5:
+                out.append(p)
+        return out
+
+    def _taxi_follow(self, dt: float, speed: float) -> bool:
+        """Drive the cab along ride['path'] one step, steering smoothly toward the
+        current waypoint and rolling on to the next as it's reached. Yaw eases toward
+        the heading so corners read as arcs, not snaps. Returns True at the path end."""
+        ride = self._taxi_ride
+        cab, path = ride["car"], ride["path"]
+        wp = ride["wp"]
+        if wp >= len(path):
+            return True
+        tx, tz = path[wp]
+        dx, dz = tx - cab.x, tz - cab.z
+        dist = math.hypot(dx, dz)
+        last = wp >= len(path) - 1
+        if dist <= (0.8 if last else 2.6):   # reached it — advance (corners round early)
+            ride["wp"] = wp + 1
+            return ride["wp"] >= len(path)
+        target_yaw = math.degrees(math.atan2(dx, dz)) % 360.0
+        cab.yaw = self._lerp_angle(cab.yaw, target_yaw, min(1.0, 7.0 * dt))
+        step = min(dist, speed * dt)
+        cab.x += dx / dist * step
+        cab.z += dz / dist * step
+        cab.y = self.park.ground_y(cab.x, cab.z)
+        return False
+
+    @property
+    def _in_taxi(self) -> bool:
+        """True while the CEO is riding inside the cab (avatar hidden, like driving)."""
+        return self._taxi_ride is not None and self._taxi_ride["phase"] == "ride"
+
+    def _update_taxi_ride(self, dt: float) -> None:
+        """Advance the taxi cinematic one frame: a small phase machine that drives the
+        cab in to the CEO along the streets, carries them to the destination, drops
+        them off and leaves. The world is frozen around it (see _park_frame); Esc skips
+        to the drop-off."""
+        ride = self._taxi_ride
+        ride["t"] += dt
+        cab, ceo = ride["car"], self.player.ch
+        px, pz = ride["pickup"]
+        phase = ride["phase"]
+
+        # Esc / ○ bails the cutscene: jump straight to the destination.
+        if pr.is_key_pressed(pr.KEY_ESCAPE) or gamepad.pressed(gamepad.CIRCLE):
+            self._finish_taxi_ride()
+            return
+
+        if phase == "arrive":
+            done = self._taxi_follow(dt, speed=17.0)
+            ceo.yaw = self._lerp_angle(            # CEO turns to watch the cab pull up
+                ceo.yaw, math.degrees(math.atan2(cab.x - px, cab.z - pz)) % 360.0,
+                min(1.0, 6.0 * dt))
+            if done or ride["t"] > 14.0:
+                ride["phase"], ride["t"] = "board", 0.0
+        elif phase == "board":
+            if ride["t"] > 0.9:                    # brief beat: the CEO hops in
+                dx, dz = ride["dest"]
+                ride["path"], ride["wp"] = self._road_path(cab.x, cab.z, dx, dz), 1
+                ride["phase"], ride["t"] = "ride", 0.0
+                self._toast(f"On the way to {ride['label']}…")
+        elif phase == "ride":
+            done = self._taxi_follow(dt, speed=22.0)
+            ceo.x, ceo.z, ceo.yaw = cab.x, cab.z, cab.yaw   # rides inside (avatar hidden)
+            if done or ride["t"] > 30.0:
+                self._drop_ceo_beside_cab()
+                hx, hz = cab.heading()             # cab carries on down the street to leave
+                ride["path"] = self._road_path(cab.x, cab.z, cab.x + hx * 34.0, cab.z + hz * 34.0)
+                ride["wp"] = 1
+                ride["phase"], ride["t"] = "dropoff", 0.0
+                self._toast(f"You've arrived at {ride['label']}.")
+        elif phase == "dropoff":
+            if ride["t"] > 1.0:                    # CEO is out and standing; cab departs
+                ride["phase"], ride["t"] = "leave", 0.0
+        elif phase == "leave":
+            self._taxi_follow(dt, speed=18.0)
+            if ride["t"] > 2.0:
+                self._finish_taxi_ride()
+                return
+        self._update_taxi_camera(dt)
+
+    def _drop_ceo_beside_cab(self) -> None:
+        """Step the CEO out of the stopped cab toward the destination POI (the cab
+        waits on the road; the CEO walks the last few feet to the kerb)."""
+        cab, ceo = self._taxi_ride["car"], self.player.ch
+        dx, dz = self._taxi_ride["dest"]
+        vx, vz = dx - cab.x, dz - cab.z
+        d = math.hypot(vx, vz) or 1.0
+        ceo.x = cab.x + vx / d * 2.6              # out toward the POI
+        ceo.z = cab.z + vz / d * 2.6
+        ceo.x, ceo.z = self.park.collide(ceo.x, ceo.z)
+        ceo.y = self.park.ground_y(ceo.x, ceo.z)
+        ceo.yaw = math.degrees(math.atan2(vx, vz)) % 360.0   # face the POI
+
+    def _finish_taxi_ride(self) -> None:
+        """End the ride: drop the CEO at the destination, clear the cab, hand the
+        camera back. Used both on natural completion and on Esc-to-skip."""
+        ride = self._taxi_ride
+        ceo = self.player.ch
+        if ride is not None and ride["phase"] in ("arrive", "board", "ride"):
+            # Skipped early — teleport to the destination cleanly.
+            dx, dz = ride["dest"]
+            ceo.x, ceo.z = self.park.collide(dx, dz)
+            ceo.y = self.park.ground_y(ceo.x, ceo.z)
+            self._toast(f"You've arrived at {ride['label']}.")
+        self._taxi_ride = None
+        self.camera.recenter(ceo)
+
+    def _update_taxi_camera(self, dt: float) -> None:
+        """A floaty 3/4 chase shot of the cab for the ride — set the camera pose
+        directly (no player look input) so it reads as a cutscene."""
+        cab = self._taxi_ride["car"]
+        hx, hz = cab.heading()
+        sx, sz = -hz, hx                          # cab's right-hand side
+        # Behind, above and a touch to the side of the cab, looking at it.
+        des = pr.Vector3(cab.x - hx * 8.5 + sx * 3.5, cab.y + 5.0,
+                         cab.z - hz * 8.5 + sz * 3.5)
+        cam = self._taxi_ride["cam"]
+        if cam is None:
+            cam = pr.Vector3(des.x, des.y, des.z)
+        t = min(1.0, 3.0 * dt)
+        cam.x += (des.x - cam.x) * t
+        cam.y += (des.y - cam.y) * t
+        cam.z += (des.z - cam.z) * t
+        self._taxi_ride["cam"] = cam
+        self.camera.camera.position = cam
+        self.camera.camera.target = pr.Vector3(cab.x, cab.y + 1.0, cab.z)
+
+    def _draw_taxi_overlay(self) -> None:
+        """Cinematic letterbox + a status caption while a taxi ride plays out."""
+        ride = self._taxi_ride
+        sw, sh = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+        bar = int(sh * 0.10)
+        pr.draw_rectangle(0, 0, sw, bar, pr.Color(0, 0, 0, 230))
+        pr.draw_rectangle(0, sh - bar, sw, bar, pr.Color(0, 0, 0, 230))
+        label = ride["label"]
+        cap = {"arrive": "🚕  Your taxi is arriving…",
+               "board": "🚕  Hop in!",
+               "ride": f"🚕  En route to {label}",
+               "dropoff": f"🚕  Arrived at {label}",
+               "leave": f"🚕  Arrived at {label}"}.get(ride["phase"], "🚕")
+        cw = pr.measure_text(cap, 24)
+        pr.draw_text(cap, (sw - cw) // 2, sh - bar + (bar - 24) // 2, 24,
+                     pr.Color(245, 224, 120, 255))
+        skip = "Esc to skip"
+        kw = pr.measure_text(skip, 16)
+        pr.draw_text(skip, sw - kw - 18, bar // 2 - 8, 16, pr.Color(200, 200, 210, 255))
+
+    def _park_car_at_home_garage(self) -> bool:
+        """Auto-spawn: if you own BOTH a car and a home-with-garage, dock the real
+        drivable car on that driveway (hiding the cosmetic prop there) so it's ready
+        to drive from home. No-op while at the wheel. Returns True if it docked."""
+        self.park.driveway_car_home = None        # default: cosmetic prop shows
+        if self.owned_car is None or self.driving:
+            return False
+        home = self.park.home_garage()
+        if home is None:
+            return False
+        spot = self.park.garage_spot(home)
+        if spot is None:
+            return False
+        self.car.x, self.car.z, self.car.yaw = spot
+        self.car.stop()
+        self.park.driveway_car_home = home.id      # real car stands in for the prop
+        return True
+
     def _buy_car(self, deal) -> None:
         """Purchase a showroom car. Gated on cash; on success the ghost is replaced
         by your real, drivable car sitting in that slot. One car at a time."""
@@ -2775,7 +3272,11 @@ class Game:
         self.car.stop()
         self.link.save_owned_car(self.owned_car)   # persist immediately
         self._saved_owned_car = self.owned_car
-        self._toast(f"Bought the {deal.name}! Walk up and press F to drive.")
+        if self._park_car_at_home_garage():        # own a garage home → it goes there
+            self._toast(f"Bought the {deal.name}! It's parked in your home garage — "
+                        "press F there to drive.")
+        else:
+            self._toast(f"Bought the {deal.name}! Walk up and press F to drive.")
 
     def _sell_car(self) -> None:
         """Sell your car back to the Auto Mall for a partial refund. The matching
@@ -2791,6 +3292,7 @@ class Game:
         self.owned_car = None
         self.driving = False
         self.car.stop()
+        self.park.driveway_car_home = None         # cosmetic prop returns to the driveway
         self.link.save_owned_car(None)
         self._saved_owned_car = None
         self._toast(f"Sold the {name} for ${refund:,}.")
@@ -2865,7 +3367,11 @@ class Game:
                   or self.dossier.open or self.investor.open or self.phone.open
                   or self.shop.open or self._bob_talk is not None
                   or self._lady_talk is not None or self._civilian_talk is not None
-                  or self._busker_talk is not None or self._biz_card is not None)
+                  or self._busker_talk is not None or self._biz_card is not None
+                  or self._taxi_ride is not None)
+        # An AI taxi ride owns the camera + the CEO's position while it plays out.
+        if self._taxi_ride is not None:
+            self._update_taxi_ride(dt)
         # Live to-do guide: re-resolve the chosen to-do's spot each frame so the gold
         # beacon tracks the world; clear it (with a cheer) the moment it's completed.
         guide = self._guide_target_for(self._guide_key) if self._guide_key else None
@@ -2873,6 +3379,12 @@ class Game:
             if self.taskboard.is_done(self._guide_key):
                 self._toast("To-do complete ✓  Nice work.")
             self._guide_key = None
+        if guide is None and self._guide_point is not None:   # free map pin
+            guide = self._guide_point
+            if math.hypot(guide[0] - ceo.x, guide[1] - ceo.z) < parkmod.REACH + 1.0:
+                self._toast(f"You've arrived at {guide[2]}.")
+                self._guide_point = None
+                guide = None
         if self.phone.open:                    # the Nokia works out in the city too
             self.phone.update()
         if self._bob_talk is not None:         # mid-greeting: the speech box owns input
@@ -2954,6 +3466,12 @@ class Game:
             self.busker.yaw = math.degrees(math.atan2(ceo.x - self.busker.x,
                                                       ceo.z - self.busker.z))
             self.busker.update(dt, self.registry)
+        # Vivian outside the bank, until you've taken the one-time grant.
+        show_banker = not self._bank_grant_done
+        if show_banker:
+            self.banker.yaw = math.degrees(math.atan2(ceo.x - self.banker.x,
+                                                      ceo.z - self.banker.z))
+            self.banker.update(dt, self.registry)
         self.pedestrians.update(dt, ceo.x, ceo.z, self.registry)  # ambient crowd
         near = self.park.nearest(ceo.x, ceo.z)
         # Quest-stop NPC buildings (Chamber of Commerce, …) are only offered when no
@@ -2978,13 +3496,16 @@ class Game:
                        and math.hypot(self.busker.x - ceo.x, self.busker.z - ceo.z) <= parkmod.REACH)
         guitar_near = (show_guitar and near is None and near_npc is None
                        and math.hypot(self._guitar_pos[0] - ceo.x, self._guitar_pos[1] - ceo.z) <= parkmod.REACH)
+        banker_near = (show_banker and near is None and near_npc is None
+                       and math.hypot(self.banker.x - ceo.x, self.banker.z - ceo.z) <= parkmod.REACH)
         # Backdrop tenants: every other building is now a real, walk-up-able business.
         # It's the LAST fallback — offered only when nothing scripted is in reach, so
         # E is never stolen from a lease lot, shop, or quest NPC.
         near_biz = None
         if (near is None and near_npc is None and not intern_near and not bob_near
                 and not lady_near and not civilian_near and not pet_near
-                and not busker_near and not guitar_near and deal_near is None):
+                and not busker_near and not guitar_near and not banker_near
+                and deal_near is None):
             near_biz = self.park.nearest_business(ceo.x, ceo.z)
 
         # An open business card swallows the next E/Esc to dismiss itself (the world
@@ -3029,7 +3550,13 @@ class Game:
                     self.cash -= near.deposit
                     self.park.lease(near)        # capacity rises via max_desks
                     if getattr(near, "home", False):
-                        self._toast(f"You bought {near.name}! Home sweet home.")
+                        # Own a car already + this home has a garage → the car
+                        # auto-spawns on its driveway, ready to drive from home.
+                        if self._park_car_at_home_garage():
+                            self._toast(f"You bought {near.name}! Your car's waiting "
+                                        "in the garage — walk up and press F to drive.")
+                        else:
+                            self._toast(f"You bought {near.name}! Home sweet home.")
                         self.inbox.post(
                             "Keystone Realty",
                             f"Congratulations on {near.name}! The keys are yours. "
@@ -3059,6 +3586,8 @@ class Game:
                 self._talk_to_civilian()
             elif pet_near and press_e:           # found Biscuit → he follows you home
                 self._find_pet()
+            elif banker_near and press_e:        # Vivian → one-time $200k bank grant, no questions
+                self._banker_grant()
             elif busker_near and press_e:        # Río → offer / collect the stolen-guitar quest
                 self._talk_to_busker()
             elif guitar_near and press_e:        # found the guitar → carry it back
@@ -3077,7 +3606,7 @@ class Game:
         gy = self.park.ground_y
         ceo.y = gy(ceo.x, ceo.z)
         for _ch in (getattr(self, _n, None) for _n in
-                    ("intern", "bob", "lady", "civilian", "pet", "busker", "robin")):
+                    ("intern", "bob", "lady", "civilian", "pet", "busker", "banker", "robin")):
             if _ch is not None:
                 _ch.y = gy(_ch.x, _ch.z)
         for _ped in self.pedestrians.peds:
@@ -3109,6 +3638,10 @@ class Game:
             if self._guitar_stage in (0, 2):     # "!" when Río wants to talk
                 self.park.draw_quest_indicator(self.busker.x, self.busker.z,
                                                self.busker.height + 1.4)
+        if show_banker:
+            self.banker.draw(self.registry)
+            self.park.draw_quest_indicator(self.banker.x, self.banker.z,
+                                           self.banker.height + 1.4)
         if show_guitar:                          # the stashed guitar (a simple prop)
             self._draw_guitar_prop()
             self.park.draw_quest_indicator(self._guitar_pos[0], self._guitar_pos[1], 1.4)
@@ -3116,23 +3649,32 @@ class Game:
             self.robin.draw(self.registry)
         if guide is not None:                    # the gold "go here" beacon for your picked to-do
             self.park.draw_guide_beacon(guide[0], guide[1])
+        self.park.draw_auto_mall(self.dealership)   # lot, stripes, showroom + sign, stock
         self._draw_showroom_cars()               # Auto Mall ghost display cars
         # Your owned car sits in the world once bought; while driving the CEO is
         # "inside" it, so we hide the walking avatar and let the car stand in.
         if self.owned_car is not None:
             self.park.draw_vehicle(self.car.model, self.car.x, self.car.z, self.car.yaw)
-        if not self.driving:
+        # A summoned AI taxi, mid-ride.
+        if self._taxi_ride is not None:
+            cab = self._taxi_ride["car"]
+            self.park.draw_vehicle("Taxi", cab.x, cab.z, cab.yaw)
+        # Hide the avatar while at the wheel or riding inside the cab.
+        if not self.driving and not self._in_taxi:
             ceo.draw(self.registry)
         pr.end_mode_3d()
-        if self.driving:                         # no on-foot interaction prompts at the wheel
-            self._draw_park_overlay(None, None, None)
+        if self._taxi_ride is not None:          # cutscene: letterbox + status, no prompts
+            self._draw_taxi_overlay()
         else:
-            self._draw_park_overlay(near, near_npc, near_biz)
-            self._draw_showroom_labels(deal_near)
-        self._draw_drive_hud(car_near, deal_near)
-        if guide is not None:                    # top chip + screen-edge arrow to the spot
-            self._draw_guide_hud(guide)
-        self._draw_companion_chip()
+            if self.driving:                     # no on-foot interaction prompts at the wheel
+                self._draw_park_overlay(None, None, None)
+            else:
+                self._draw_park_overlay(near, near_npc, near_biz)
+                self._draw_showroom_labels(deal_near)
+            self._draw_drive_hud(car_near, deal_near)
+            if guide is not None:                # top chip + screen-edge arrow to the spot
+                self._draw_guide_hud(guide)
+            self._draw_companion_chip()
         if self._bob_talk is not None:           # childhood friend's greeting, on top
             self._draw_bob_talk()
         if self._lady_talk is not None:          # Mae's conversation, on top
@@ -3155,6 +3697,8 @@ class Game:
         self._draw_business_card()             # backdrop-tenant greeting, on top
         if self.phone.open:                    # Nokia overlay, on top of the city
             self.phone.draw()
+        self.office_radar.draw(self._office_snapshot,
+                               configured=self._geo_thread is not None)
         pr.end_drawing()
 
     def _label_3d(self, text, sub, sub_color, wx, wy, wz, font=16, main_color=None) -> None:
@@ -3223,7 +3767,10 @@ class Game:
         # Lease lots: label when near; HQ always (so you can find your way home).
         for b in self.park.buildings:
             d = math.hypot(b.x - ceo.x, b.z - ceo.z)
-            if d > LABEL_DIST and b.status != "hq":
+            # Always label your home base (the building you operate from, where your
+            # agents are) and any leased office, so you can spot them from anywhere in
+            # the city; plain lease lots only label when you're near.
+            if d > LABEL_DIST and not b.leased and b is not self.current_building:
                 continue
             if b.status == "available":
                 verb = "BUY" if getattr(b, "home", False) else "LEASE"
@@ -3334,11 +3881,19 @@ class Game:
                      "C company  -  N phone",
                      18, config.WINDOW_HEIGHT - 28, 18, pr.LIGHTGRAY)
 
+    def _room_label(self, room_key) -> str:
+        """Friendly office-room name for a room key (e.g. 'Engineering'), else ''."""
+        try:
+            r = self.interior.rooms.get(room_key) if room_key else None
+            return (r.label or room_key) if r else (room_key or "")
+        except Exception:
+            return room_key or ""
+
     def _sync_city_geo(self) -> None:
-        """Push live positions of the CEO, every agent, and the city's shops into a
-        Redis geospatial index once a second. Lets the backend ask spatial questions
-        (nearest idle engineer, who's by the cafe) without the game scanning entities
-        each frame. Best-effort + gated on REDIS_URL — never disturbs the game loop."""
+        """Once a second, snapshot the CEO + every agent (tagged with their office
+        room) + the city's shops into a plain list, and make sure the background geo
+        worker is running. The actual Redis I/O happens OFF-thread (see _geo_worker),
+        so the render loop never waits on the network. Gated on REDIS_URL."""
         now = pr.get_time()
         if now - getattr(self, "_geo_last", 0.0) < 1.0:
             return
@@ -3347,19 +3902,47 @@ class Game:
             from backend import city_geo
             if not city_geo.is_configured():
                 return
-            ceo = self.player.ch
-            ents = [{"id": "ceo", "x": ceo.x, "z": ceo.z, "kind": "agent",
-                     "name": ceo.name or "You (CEO)", "role": "CEO"}]
-            for a in self.all_agents:
-                ents.append({"id": a.backend_id or f"agent:{a.name}",
-                             "x": a.x, "z": a.z, "kind": "agent",
-                             "name": a.name, "role": a.role})
-            for b in self.park.npc:
-                ents.append({"id": b.id, "x": b.x, "z": b.z,
-                             "kind": "building", "name": b.name})
-            city_geo.sync(ents)
         except Exception:
-            pass
+            return
+        ceo = self.player.ch
+        in_office = self.mode != "park"
+        my_room = self._room_label(self.room.key) if in_office else "City"
+        ents = [{"id": "ceo", "x": ceo.x, "z": ceo.z, "kind": "agent",
+                 "name": ceo.name or "You (CEO)", "role": "CEO", "room": my_room}]
+        for a in self.all_agents:
+            ents.append({"id": a.backend_id or f"agent:{a.name}",
+                         "x": a.x, "z": a.z, "kind": "agent",
+                         "name": a.name, "role": a.role,
+                         "room": self._room_label(getattr(a, "home_room", None))})
+        for b in self.park.npc:
+            ents.append({"id": b.id, "x": b.x, "z": b.z,
+                         "kind": "building", "name": b.name, "room": "City"})
+        self._geo_entities = ents
+        self._ensure_geo_worker()
+
+    def _ensure_geo_worker(self) -> None:
+        if self._geo_thread is not None:
+            return
+        import threading
+        self._geo_thread = threading.Thread(target=self._geo_worker, daemon=True,
+                                            name="geo-sync")
+        self._geo_thread.start()
+
+    def _geo_worker(self) -> None:
+        """Daemon: push the latest position snapshot to Redis geo and pull back the
+        room summary for the Office Radar. ALL geo network lives here, off the render
+        loop, so a slow Redis round-trip can never stutter the game."""
+        import time as _t
+        from backend import city_geo
+        while True:
+            ents = self._geo_entities
+            if ents:
+                try:
+                    city_geo.sync(ents)
+                    self._office_snapshot = city_geo.room_summary()
+                except Exception:
+                    pass
+            _t.sleep(1.0)
 
     def run(self) -> None:
         # HIGHDPI: on a Retina panel the backing framebuffer must match physical
@@ -3440,6 +4023,16 @@ class Game:
             if rent:                    # once per in-game month: checkpoint both
                 self.market.save(self.link)   # (stamps last_seen for offline catch-up)
                 self.farm.save(self.link)
+            # Recurring customer revenue on its OWN monthly clock (NOT the rent clock,
+            # which is 0 until you lease an office). It only kicks in once you've done
+            # enough to-dos to have something worth buying; then an LLM customer panel
+            # judges the product each month and pays accordingly — recurring over time.
+            self._rev_timer += dt
+            if self._rev_timer >= parkmod.MONTH_SECONDS:
+                self._rev_timer -= parkmod.MONTH_SECONDS
+                if self._revenue_unlocked():
+                    self.link.request_customers(self.company, len(self.all_agents))
+            self._collect_customer_revenue()   # bank sales once the panel returns
 
             # Checkpoint cash + leased offices (throttled inside) so the balance and
             # your buildings survive a restart, not just the market/roster.
@@ -3451,7 +4044,7 @@ class Game:
             # sky color is read per-frame in each draw path). T peeks at the next
             # phase without waiting for the clock.
             self.calendar.advance(self.daylight.advance(dt))
-            if pr.is_key_pressed(pr.KEY_T):
+            if pr.is_key_pressed(pr.KEY_T) and not self._typing_active():
                 self.calendar.advance(self.daylight.skip_phase())
             self.registry.set_daylight(self.daylight)
 
@@ -3479,23 +4072,20 @@ class Game:
             self._refresh_tasks()           # tick the plot's auto-completing to-dos
             # The to-do list lives only on the phone now (N → To-Do) — no L panel.
             # C toggles the Company Dossier (view/edit the decisions agents read).
-            if pr.is_key_pressed(pr.KEY_C) and not self.chat.open \
-                    and not self.dossier.capturing and not self.market_panel.open \
-                    and not self.grant_panel.open and not self.slot_panel.open \
-                    and not self.farm_panel.open and not self.terminal.open:
+            if pr.is_key_pressed(pr.KEY_C) and not self._typing_active():
                 self.dossier.toggle()
             # N toggles the Nokia phone from anywhere (office OR city) — press again to
             # close. Skipped while a text field owns the keyboard (incl. the phone's own
             # message screens, where N should type a letter, not slam the phone shut).
-            if pr.is_key_pressed(pr.KEY_N) and not self.chat.open \
-                    and not self.dossier.capturing and not self.market_panel.open \
-                    and not self.grant_panel.open and not self.slot_panel.open \
-                    and not self.farm_panel.open and not self.terminal.open \
-                    and not self.phone.capturing and self._quest_input is None:
+            if pr.is_key_pressed(pr.KEY_N) and not self._typing_active():
                 if self.phone.open:
                     self.phone.close()
                 else:
                     self.phone.open_panel()
+            # K toggles the Office Radar — a live who's-in-which-room read of the Redis
+            # geo map. Skipped while a text field owns the keyboard.
+            if pr.is_key_pressed(pr.KEY_K) and not self._typing_active():
+                self.office_radar.toggle()
 
             if self.mode == "park":
                 self._park_frame(dt)
@@ -3591,6 +4181,7 @@ class Game:
                 self.director.tick(dt)
                 for brain in self._active_brains():
                     brain.update(dt)
+                self._update_offscreen_life(dt)  # bots roam other floors + walk in via portals
                 self._greet_at_reception()      # front-desk hello on walk-up
 
             for ch in self.characters:
@@ -3661,6 +4252,8 @@ class Game:
                 elif portal is not None:
                     self._draw_portal_prompt(portal)
                 self._do_dossier_action(self.dossier.draw(self.company))
+                self.office_radar.draw(self._office_snapshot,
+                                       configured=self._geo_thread is not None)
 
             pr.end_drawing()
 
@@ -3845,4 +4438,19 @@ class Game:
 if __name__ == "__main__":
     from game import npc_validate
     npc_validate.report()          # warn on park_lots ↔ tasks ↔ dialogue drift (non-fatal)
-    Game().run()
+    # Any unhandled crash gets the FULL traceback written to crash.log (and echoed),
+    # so a hard-to-reproduce in-game crash (e.g. driving) can be diagnosed after the
+    # fact instead of vanishing with the window.
+    try:
+        Game().run()
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        try:
+            with open("crash.log", "w") as fh:
+                fh.write(tb)
+        except OSError:
+            pass
+        print("\n=== Company.AI crashed — full traceback above, copy in crash.log ===\n")
+        print(tb)
+        raise

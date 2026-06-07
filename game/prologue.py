@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import pyray as pr
 
-from . import config, roster
-from .entities import Character
+from . import config, npcs
 from .onboarding import OnboardingScreen
 
-GUIDE_NAME = "Sam"
-GUIDE_MODEL = "Casual_Male.gltf"     # a friendly "mover" who relocates you
+# Sam's identity lives in the named-character registry (game/npcs.py) like the
+# rest of the cast; this is just the prologue's local handle to his name (used
+# in the dialogue script + name plate). His model/look come from the registry.
+GUIDE_NAME = npcs.NAMED["sam"].name
 
 _BG = pr.Color(16, 18, 26, 255)
 _BOX = pr.Color(24, 28, 40, 245)
@@ -59,11 +60,9 @@ class Prologue:
         self._fade_hold = 0.0             # seconds held on the title card
         self.creator = OnboardingScreen()
         self.creator.first_run = True
-        self._guide = Character(name=GUIDE_NAME, role="Guide", x=0.0, z=0.0,
-                                color=pr.GOLD, model=GUIDE_MODEL)
-        # Tint to a real appearance, else the model's raw "Skin" material (~black)
-        # shows and the intro guide renders solid black.
-        roster.apply_look(self._guide, {"skin_idx": 3, "hair_idx": 4, "eye_idx": 1})
+        # Built from the registry (appearance/look applied there) so the intro
+        # guide never renders as the model's raw ~black "Skin" material.
+        self._guide = npcs.make("sam")
         self._cam = pr.Camera3D(pr.Vector3(0.0, 1.35, 3.4), pr.Vector3(0.0, 1.0, 0.0),
                                 pr.Vector3(0.0, 1.0, 0.0), 45.0, pr.CAMERA_PERSPECTIVE)
         self._spin = 0.0

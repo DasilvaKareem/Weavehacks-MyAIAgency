@@ -1,7 +1,10 @@
 """Push-to-talk voice for the chat panel.
 
 Hold the talk button to record from the mic; release to transcribe. Speech →
-text goes through Gemini (same key as the chat backend); the agent's reply is
+text goes through Google (Gemini multimodal, same key as the chat backend) — see
+`transcribe()` and the COMPANY_AI_STT env var. (A local mlx-whisper path exists
+but is headless-only: it fights raylib for the Metal GPU and crashes the game in
+process — see the note above `transcribe`.) The agent's reply is
 spoken aloud with **Gemini TTS** (`backend.tts`), so every employee keeps one
 distinct voice — the same one whether they speak in chat, on the phone, or in a
 meeting (voices are assigned deterministically by agent id). Everything that can
@@ -94,9 +97,23 @@ def _to_wav(pcm: bytes) -> bytes:
     return buf.getvalue()
 
 
-# --- transcription (Gemini) -------------------------------------------------
+# --- transcription ----------------------------------------------------------
+# Speech → text via Google (Gemini multimodal), chosen by COMPANY_AI_STT
+# (default "gemini"). ~2-3.5s, uses the same key as chat, runs on a worker
+# thread so the render loop never blocks.
+#
+# DO NOT default to "mlx": local mlx-whisper runs Whisper on the Apple-Silicon
+# GPU (Metal), but raylib already owns the GPU context on the main thread, so
+# MLX inference on the voice worker thread fights for Metal and CRASHES the game
+# the first time you push-to-talk. (It benchmarks great standalone — ~0.6s — but
+# only because raylib isn't running there.) The "mlx" branch is kept for HEADLESS
+# use only; a future safe path would run it in a separate process. Gemini stays
+# the in-game default precisely because it never touches the local GPU.
+_STT_BACKEND = os.getenv("COMPANY_AI_STT", "gemini").strip().lower()
+_MLX_MODEL = os.getenv("COMPANY_AI_STT_MODEL", "mlx-community/whisper-small.en-mlx")
 
 _client = None
+_mlx_failed = False        # MLX dep/model/hardware unavailable — stop retrying it
 
 
 def _genai_client():
@@ -108,9 +125,28 @@ def _genai_client():
     return _client
 
 
-def transcribe(wav_bytes: bytes, model: str) -> str:
-    if not wav_bytes:
-        return ""
+def _transcribe_mlx(wav_bytes: bytes) -> str | None:
+    """Local Whisper via mlx-whisper (Apple-Silicon GPU). Decodes our 16kHz mono
+    int16 WAV in-memory to a float32 array — no ffmpeg needed, since the recorder
+    already produces exactly Whisper's expected format. Returns None on any
+    failure so the caller falls back to Gemini (and we stop retrying MLX)."""
+    global _mlx_failed
+    if _mlx_failed:
+        return None
+    try:
+        import numpy as np
+        import mlx_whisper
+        with wave.open(io.BytesIO(wav_bytes), "rb") as w:
+            pcm = w.readframes(w.getnframes())
+        audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=_MLX_MODEL)
+        return (result.get("text") or "").strip()
+    except Exception:
+        _mlx_failed = True
+        return None
+
+
+def _transcribe_gemini(wav_bytes: bytes, model: str) -> str:
     from google.genai import types
     resp = _genai_client().models.generate_content(
         model=model,
@@ -120,6 +156,18 @@ def transcribe(wav_bytes: bytes, model: str) -> str:
         ],
     )
     return (resp.text or "").strip()
+
+
+def transcribe(wav_bytes: bytes, model: str) -> str:
+    """Speech (WAV bytes) → text via the configured backend, with Gemini as the
+    always-available fallback. `model` is the Gemini model for that path."""
+    if not wav_bytes:
+        return ""
+    if _STT_BACKEND == "mlx":
+        out = _transcribe_mlx(wav_bytes)
+        if out is not None:
+            return out
+    return _transcribe_gemini(wav_bytes, model)
 
 
 # --- text-to-speech (Gemini) ------------------------------------------------

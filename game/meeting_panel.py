@@ -54,6 +54,7 @@ class MeetingPanel:
         self._lines: list[tuple[pr.Color, str]] = []
         self._scroll = 0
         self._invite_scroll = 0
+        self._draft = ""               # what the CEO is typing into a live meeting
         self.voice_mode = "local"     # off | local (speak here) | daily (boardroom call)
         self.player = None            # VoicePlayer, created when a local voiced meeting starts
         self._daily_reason = None     # why a boardroom call can't start (dep/key), or None
@@ -68,6 +69,7 @@ class MeetingPanel:
         self._lines = []
         self._scroll = 0
         self._invite_scroll = 0
+        self._draft = ""
         self._daily_reason = self.link.daily_available()
         while pr.get_char_pressed() > 0:   # drop the 'M' that opened this
             pass
@@ -91,6 +93,7 @@ class MeetingPanel:
         self.mode = "live"
         self._lines = []
         self._scroll = 0
+        self._draft = ""
         if mode == "local" and self.player is None:
             self.player = VoicePlayer()
 
@@ -123,11 +126,29 @@ class MeetingPanel:
                 for wl in _wrap(f"{name}: {content}", PANEL_W - 2 * PAD, FONT):
                     self._lines.append((color, wl))
                 self._lines.append((BG, ""))   # spacer
-                if self.voice_mode == "local" and self.player is not None:
+                # Voice everyone but the CEO — the human already typed their line,
+                # no need for the machine to read it back to them.
+                if self.voice_mode == "local" and self.player is not None and name != "CEO":
                     self.player.enqueue(content, self.link.voice_for(name))
             wheel = pr.get_mouse_wheel_move()
             if wheel:
                 self._scroll = max(0, self._scroll + int(wheel * 3))
+            # While the call is live, the CEO can type a line and Enter to send it
+            # — it's folded into the meeting before the next agent turn.
+            if self.link.running():
+                ch = pr.get_char_pressed()
+                while ch > 0:
+                    if 32 <= ch < 127 and len(self._draft) < 160:
+                        self._draft += chr(ch)
+                    ch = pr.get_char_pressed()
+                bs = pr.is_key_pressed(pr.KEY_BACKSPACE)
+                if hasattr(pr, "is_key_pressed_repeat"):
+                    bs = bs or pr.is_key_pressed_repeat(pr.KEY_BACKSPACE)
+                if bs and self._draft:
+                    self._draft = self._draft[:-1]
+                if pr.is_key_pressed(pr.KEY_ENTER) and self._draft.strip():
+                    self.link.say(self._draft.strip())
+                    self._draft = ""
 
     # --- draw --------------------------------------------------------------
 
@@ -231,7 +252,12 @@ class MeetingPanel:
 
         body_top = y + 58
         foot = y + PANEL_H - 56
-        visible = max(1, (foot - body_top) // LINE_H)
+        running = self.link.running()
+        # While the call is live, reserve a row above the footer for the CEO's
+        # input field; once it's over, the transcript reclaims that space.
+        input_y = foot - 44
+        body_bottom = (input_y - 6) if running else foot
+        visible = max(1, (body_bottom - body_top) // LINE_H)
         max_scroll = max(0, len(self._lines) - visible)
         self._scroll = min(self._scroll, max_scroll)
         end = len(self._lines) - self._scroll
@@ -241,7 +267,15 @@ class MeetingPanel:
                 pr.draw_text(line, x + PAD, ty, FONT, color)
             ty += LINE_H
 
-        running = self.link.running()
+        if running:
+            fld = pr.Rectangle(x + PAD, input_y, PANEL_W - 2 * PAD, 32)
+            pr.draw_rectangle_rec(fld, FIELD)
+            pr.draw_rectangle_lines_ex(fld, 1, pr.Color(120, 70, 160, 255))
+            caret = "_" if (pr.get_time() % 1.0) < 0.5 else ""
+            placeholder = "Speak up — type to steer the team, Enter to send…"
+            pr.draw_text((self._draft or placeholder) + (caret if self._draft else ""),
+                         int(fld.x) + 8, int(fld.y) + 7, FONT,
+                         pr.RAYWHITE if self._draft else pr.GRAY)
         if running:
             dots = "." * (1 + int(pr.get_time() * 2) % 3)
             pr.draw_text("in progress" + dots, x + PAD, foot + 8, FONT, MUTED)

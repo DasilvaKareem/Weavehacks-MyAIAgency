@@ -27,6 +27,7 @@ from . import zones, locomotion
 WORK = "work"            # idle at own desk
 ROAM = "roam"            # walking the policy route
 SOCIALIZE = "socialize"  # visiting another bot for banter
+TRAVEL = "travel"        # walking to a portal to leave for another room/floor
 GOTO = "goto"            # CEO told it to go somewhere
 FOLLOW = "follow"        # CEO told it to follow
 MEETING = "meeting"      # summoned to the meeting table
@@ -45,6 +46,7 @@ class BotPolicy:
     sociability: float = 0.4          # 0..1 chance-weight to seek out peers
     restlessness: float = 0.4         # 0..1 chance-weight to leave the desk
     focus: float = 0.6                # 0..1 -> longer dwell at the desk
+    explore: float = 0.3              # 0..1 chance-weight to leave the room (other floors/wings)
     banter: list = field(default_factory=list)   # persona one-liners
     mood: str = "neutral"
 
@@ -64,6 +66,9 @@ class BotContext:
     ceo: object             # CEO Character (for FOLLOW)
     agents: list            # all agent Characters (peers = these minus self)
     seats: dict = field(default_factory=dict)  # zone name -> ((x, z), yaw) seatable spot
+    interior: object = None  # active BuildingInterior (room/portal graph) for cross-room travel
+    active_room: str = None  # key of the room currently being simulated/drawn
+    on_depart: object = None  # callback(ch, dest_room_key) fired when a bot exits via a portal
 
 
 def default_policy(ch, home: tuple) -> BotPolicy:
@@ -78,6 +83,7 @@ def default_policy(ch, home: tuple) -> BotPolicy:
         sociability=round(rng.uniform(0.25, 0.7), 2),
         restlessness=round(rng.uniform(0.25, 0.65), 2),
         focus=round(rng.uniform(0.4, 0.85), 2),
+        explore=round(rng.uniform(0.2, 0.6), 2),
         banter=[],
         mood="neutral",
     )
@@ -104,6 +110,7 @@ class BotBrain:
         self._pending_sit = None      # yaw to face once we arrive at a seat, else None
         self._route_i = 0
         self._last_ceo = None
+        self._travel_dest = None       # room key this bot is walking out to (TRAVEL state)
         self._rng = random.Random((hash(ch.name) ^ 0x5bd1e995) & 0xFFFFFFFF)
         # Heads-down work session: seconds this bot stays at its desk before it's
         # even eligible for a break. The Director won't pull a bot while this is >0,
@@ -150,6 +157,33 @@ class BotBrain:
             self.state = SOCIALIZE
             self._social_peer = peer
 
+    def start_travel(self) -> bool:
+        """Pick another room/floor, walk to the portal (doorway/elevator) that
+        heads toward it, and on arrival leave the active room (ctx.on_depart).
+        Returns False (so the Director can fall back to a normal break) if the
+        building has nowhere else to go or no path exists."""
+        if self.frozen or self.commanded:
+            return False
+        intr, here = self.ctx.interior, self.ctx.active_room
+        if intr is None or here is None or self.ctx.on_depart is None:
+            return False
+        dests = intr.other_rooms(here)
+        if not dests:
+            return False
+        dest = self._rng.choice(dests)
+        portal = intr.next_hop(here, dest)
+        if portal is None:
+            return False
+        if not self._go_to(portal.pos):
+            return False
+        self.state = TRAVEL
+        self._travel_dest = dest
+        self.say(self._rng.choice([
+            "Heading to another floor.", "Stepping out for a bit.",
+            "Going to check on the other team.", "Be right back.",
+        ]))
+        return True
+
     # -- per-frame update ----------------------------------------------------
     def update(self, dt: float) -> None:
         self._tick_bubble(dt)
@@ -168,6 +202,8 @@ class BotBrain:
 
         if self.state == WORK:
             self._update_dwell(dt)            # just stand there until nudged
+        elif self.state == TRAVEL:
+            self._update_travel(dt)
         elif self.state in (ROAM, SOCIALIZE):
             self._update_routine(dt)
 
@@ -259,6 +295,17 @@ class BotBrain:
         locomotion.apply_anim(self.ch, moving=False, seated=self._seated)
         if self.dwell <= 0.0:
             self._go_work()
+
+    def _update_travel(self, dt: float) -> None:
+        # Walk to the portal; on arrival, hand off to the world to actually move
+        # this bot out of the active room (it stops being drawn/simulated here).
+        if self.follower.active:
+            self.follower.update(self.ch, dt)
+            return
+        dest, self._travel_dest = self._travel_dest, None
+        self.state = WORK                      # reset; the bot is about to leave the set
+        if self.ctx.on_depart is not None and dest is not None:
+            self.ctx.on_depart(self.ch, dest)
 
     def _update_dwell(self, dt: float) -> None:
         # Walk back to the desk if displaced; otherwise sit at it and work.
@@ -380,10 +427,13 @@ class Director:
             r = b._rng.random()
             social_p = b.policy.sociability * 0.30
             roam_p = b.policy.restlessness * 0.30
+            travel_p = b.policy.explore * 0.12   # leaving the floor entirely is rarer
             if r < social_p:
                 b.start_socialize()
             elif r < social_p + roam_p:
                 b.start_roam()
+            elif r < social_p + roam_p + travel_p and b.start_travel():
+                pass                          # off to another floor (else: fall through)
             else:
                 # Not in the mood to get up — stay heads-down and re-check soon.
                 b._work_timer = b._rng.uniform(8.0, 20.0)

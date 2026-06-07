@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pyray as pr
 
-from . import businesses, config
+from . import businesses, config, dealership as _deal
 from .season import SEASON_SUFFIX, SEASON_TINT
 from .terrain import Terrain
 
@@ -88,6 +88,13 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "embassy": (9, 9),
             # Storefronts: The Outfitters by the brand studio; staffing up north.
             "outfitters": (7, 9), "staffing": (11, 7)}
+
+# The Auto Mall (car dealership): a showroom building + a paved lot of display
+# cars, set out on the NE edge of downtown so it's a real destination rather
+# than sitting on the spawn lane next to where you start. AUTO_MALL_ADDR is the
+# lot centre; the 2x2 footprint around it is kept building-free in _build_city.
+AUTO_MALL_ADDR = (14, 7)
+AUTO_MALL_BLOCKS = {(14, 6), (15, 6), (14, 7), (15, 7)}
 
 GROUND = pr.Color(176, 178, 184, 255)     # sidewalk concrete
 ASPHALT = pr.Color(64, 66, 72, 255)       # road
@@ -500,7 +507,12 @@ class Park:
         from .traffic import Traffic
         self.traffic = Traffic()
         self._props = self._build_props()     # static lights/signs/cones
+        self._auto_mall = None                # the Auto Mall (set by the game loop)
         self.rent_timer = 0.0
+        # When you own both a car and a home-with-garage, the real drivable car is
+        # parked on that driveway; this holds that home's id so the cosmetic prop
+        # there is skipped (the real car is drawn in its place). Set by the game loop.
+        self.driveway_car_home: str | None = None
         # 3D terrain: flat concrete basin holding the whole road grid (so the flat
         # road/sidewalk quads keep working), ramping up into grass/rock/snow hills
         # well beyond the playable bounds. Built lazily on first draw (needs GL).
@@ -519,6 +531,7 @@ class Park:
         rng = random.Random(SCENERY_SEED)
         reserved = set(LOT_ADDR.values()) | set(NPC_ADDR.values())
         reserved |= {(10, 9), (9, 9), (11, 9)}   # keep the spawn lane clear
+        reserved |= AUTO_MALL_BLOCKS             # the Auto Mall lot, kept building-free
         reserved |= self._park_addrs             # a park lawn, not a building, here
         city = []     # (model, x, z, yaw, scale_mul)
         self._biz: list[businesses.Business] = []   # one tenant per backdrop block
@@ -609,7 +622,23 @@ class Park:
                     px = b.x + (hw if dx >= 0 else -hw)
                 else:
                     pz = b.z + (hd if dz >= 0 else -hd)
+        if self._auto_mall is not None:                      # the Auto Mall showroom
+            bx, bz, _byaw, bmodel = self._auto_mall.building
+            ld = self._models.get(bmodel)
+            hw = TARGET_W / 2.0 + r
+            hd = (ld.half_d if ld else 2.5) + r
+            dx, dz = px - bx, pz - bz
+            if abs(dx) < hw and abs(dz) < hd:
+                if hw - abs(dx) < hd - abs(dz):
+                    px = bx + (hw if dx >= 0 else -hw)
+                else:
+                    pz = bz + (hd if dz >= 0 else -hd)
         return px, pz
+
+    def set_auto_mall(self, dealership) -> None:
+        """Register the Auto Mall (a dealership.Dealership) so its showroom
+        building blocks movement and `draw_auto_mall` knows what to draw."""
+        self._auto_mall = dealership
 
     def update(self, dt: float) -> None:
         """Advance ambient systems (traffic). Called each park frame."""
@@ -628,6 +657,24 @@ class Park:
     # --- queries -----------------------------------------------------------
     def leased(self) -> list[Building]:
         return [b for b in self.buildings if b.leased]
+
+    def home_garage(self) -> Building | None:
+        """The home you own that has an attached garage — your driveway, if any."""
+        return next((b for b in self.buildings
+                     if b.leased and b.home and b.garage), None)
+
+    def garage_spot(self, b: Building) -> tuple[float, float, float] | None:
+        """World (x, z, yaw) of a home garage's driveway parking slot, where an
+        owned car sits nose-out to the street. Returns None if the home has no
+        garage. Mirrors _draw_garage's geometry so the real car lands on the
+        concrete (yaw=0 faces +z, i.e. out toward the kerb)."""
+        if not (b.home and b.garage):
+            return None
+        ld = self._models.get(b.model)
+        half_d = ld.half_d if ld else 2.5
+        gx = b.x + TARGET_W / 2.0 + 3.2 / 2.0 + 0.15          # garage centre (x)
+        drive_z = b.z + half_d + 1.6                          # out on the driveway
+        return gx, drive_z, 0.0
 
     def monthly_rent(self) -> int:
         return sum(b.rent for b in self.buildings if b.status == "leased")
@@ -775,6 +822,34 @@ class Park:
         pr.draw_model_ex(self._unit_cube, pr.Vector3(x, gy + H * 0.45, z),
                          pr.Vector3(0, 1, 0), yaw, pr.Vector3(W, H * 0.9, L), col)
         return False
+
+    def draw_auto_mall(self, d) -> None:
+        """The Auto Mall's static set dressing: a paved lot with parking stripes,
+        the showroom building + its sign board, and the decorative stock cars.
+
+        Drawn inside the game loop's 3D pass. The BUYABLE ghost cars and their
+        price tags are drawn separately by the loop, which knows what's sold and
+        what the CEO can afford."""
+        if d is None:
+            return
+        px, pz, pw, pd = d.pad
+        gy = self.ground_y(px, pz)
+        # Asphalt apron, lifted a hair above the road tiles so it doesn't z-fight.
+        pr.draw_cube(pr.Vector3(px, gy + 0.06, pz), pw, 0.06, pd, ASPHALT)
+        # White parking stripes at each column edge, running the depth of the rows.
+        stripe = pr.Color(228, 228, 230, 255)
+        zlen = _deal.LOT_ROWS * _deal.SLOT_D
+        for c in range(_deal.LOT_COLS + 1):
+            sx = d.x + (c - _deal.LOT_COLS / 2.0) * _deal.SLOT_W
+            pr.draw_cube(pr.Vector3(sx, gy + 0.10, d.z), 0.16, 0.04, zlen, stripe)
+        # The showroom building (a storefront model with a built-in sign board).
+        bx, bz, byaw, bmodel = d.building
+        ld = self._models.get(bmodel)
+        if ld is not None:
+            self._draw_shell(ld, bx, bz, byaw, pr.WHITE, vboost=self.height_mult(bx, bz))
+        # Decorative stock cars filling out the lot (solid, parked, not for sale).
+        for lc in d.decor:
+            self.draw_vehicle(lc.model, lc.x, lc.z, lc.yaw)
 
     def _draw_car_box(self, c, v, gy: float = 0.0) -> None:
         body, cabin = _c(v.color), _c(tuple(int(x * 0.6) for x in v.color))
@@ -1075,10 +1150,12 @@ class Park:
         pr.draw_cube_wires(pr.Vector3(gx, gy + dh / 2 + 0.05, front + 0.03), dw, dh, 0.06, groove)
         for k in range(1, 4):
             pr.draw_cube(pr.Vector3(gx, gy + 0.5 * k, front + 0.07), dw, 0.03, 0.02, groove)
-        # short driveway out toward the kerb, with a car parked on it
+        # short driveway out toward the kerb, with a car parked on it — unless your
+        # real drivable car is parked here (then the game loop draws that instead).
         drive_z = front + 1.6
         pr.draw_cube(pr.Vector3(gx, gy + 0.02, drive_z), dw + 0.4, 0.04, 3.0, GROUND)
-        self._draw_parked_car(gx, gy, drive_z)
+        if b.id != self.driveway_car_home:
+            self._draw_parked_car(gx, gy, drive_z)
 
     def _draw_parked_car(self, x: float, gy: float, z: float) -> None:
         """A simple parked car (chassis + cabin + wheels), length along z so it sits

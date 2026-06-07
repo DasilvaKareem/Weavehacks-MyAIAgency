@@ -9,15 +9,28 @@ from game.dealership import (Dealership, can_afford, price_of, name_of,
 
 class DealershipTest(unittest.TestCase):
     def setUp(self):
-        self.lot = Dealership(0.0, 0.0, spacing=3.0)
+        self.lot = Dealership(0.0, 0.0)
 
-    def test_one_slot_per_lineup_entry(self):
+    def test_one_buyable_slot_per_lineup_entry(self):
         self.assertEqual(len(self.lot.cars), len(dealership.LINEUP))
 
-    def test_row_is_centred_on_origin(self):
-        xs = [c.x for c in self.lot.cars]
-        self.assertAlmostEqual(sum(xs) / len(xs), 0.0, places=6)   # mean at origin
-        self.assertTrue(all(c.z == 0.0 for c in self.lot.cars))
+    def test_lot_filled_out_with_decorative_stock(self):
+        # The grid (rows x cols) is fully filled: buyables + decorative stock.
+        self.assertEqual(len(self.lot.cars) + len(self.lot.decor),
+                         dealership.LOT_ROWS * dealership.LOT_COLS)
+        self.assertTrue(self.lot.decor)                       # there is filler stock
+
+    def test_lot_columns_centred_on_origin(self):
+        # Every parking column is symmetric about the lot origin, so the mean X
+        # of all cars (buyable + stock) sits on the origin.
+        xs = [c.x for c in self.lot.cars] + [c.x for c in self.lot.decor]
+        self.assertAlmostEqual(sum(xs) / len(xs), 0.0, places=6)
+
+    def test_building_sits_behind_the_lot(self):
+        bx, bz, _yaw, model = self.lot.building
+        self.assertEqual(bx, 0.0)                             # centred on the lot
+        self.assertLess(bz, 0.0)                              # set back behind (−z)
+        self.assertTrue(model.endswith(".glb"))
 
     def test_priced_low_to_high(self):
         prices = [c.price for c in self.lot.cars]

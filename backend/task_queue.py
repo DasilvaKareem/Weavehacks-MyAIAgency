@@ -69,10 +69,15 @@ def _ensure_group(r) -> bool:
 
 # --- queue ops --------------------------------------------------------------
 
-def enqueue(text: str, role: str = "") -> str:
-    """Add a task to the queue. Returns immediately with a task id."""
+def enqueue(text: str, role: str = "", source: str = "") -> str:
+    """Add a task to the queue. Returns immediately with a task id.
+
+    `source` is a free-form origin tag (e.g. 'terminal') carried through to the
+    result callback, so the dispatcher can route outcomes back where they came
+    from — terminal-fired work echoes into the terminal log."""
     tid = uuid.uuid4().hex[:12]
-    payload = json.dumps({"id": tid, "text": text, "role": role, "ts": time.time()})
+    payload = json.dumps({"id": tid, "text": text, "role": role,
+                          "source": source, "ts": time.time()})
     r = _redis()
     if r is not None:
         try:

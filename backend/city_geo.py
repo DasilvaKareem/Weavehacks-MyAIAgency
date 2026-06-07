@@ -46,7 +46,7 @@ def _to_lonlat(x: float, z: float) -> tuple[float, float]:
 
 
 def upsert(entity_id: str, x: float, z: float, *, kind: str = "",
-           name: str = "", role: str = "") -> bool:
+           name: str = "", role: str = "", room: str = "") -> bool:
     """Place/move one entity (agent, NPC, building) on the city map."""
     r = _redis()
     if r is None or not entity_id:
@@ -54,8 +54,8 @@ def upsert(entity_id: str, x: float, z: float, *, kind: str = "",
     lon, lat = _to_lonlat(x, z)
     try:
         r.execute_command("GEOADD", _city(), lon, lat, entity_id)
-        r.hset(_meta(), entity_id,
-               json.dumps({"kind": kind, "name": name or entity_id, "role": role}))
+        r.hset(_meta(), entity_id, json.dumps(
+            {"kind": kind, "name": name or entity_id, "role": role, "room": room}))
         return True
     except Exception as exc:
         log.warning("geo upsert failed: %s", exc)
@@ -63,8 +63,8 @@ def upsert(entity_id: str, x: float, z: float, *, kind: str = "",
 
 
 def sync(entities: list[dict]) -> int:
-    """Bulk-place many entities in one call. Each: {id, x, z, kind?, name?, role?}.
-    Call this once a second from the game loop — cheap, pipelined."""
+    """Bulk-place many entities in one call. Each: {id, x, z, kind?, name?, role?,
+    room?}. Call this once a second from the game loop — cheap, pipelined."""
     r = _redis()
     if r is None or not entities:
         return 0
@@ -75,7 +75,7 @@ def sync(entities: list[dict]) -> int:
             pipe.execute_command("GEOADD", _city(), lon, lat, e["id"])
             pipe.hset(_meta(), e["id"], json.dumps(
                 {"kind": e.get("kind", ""), "name": e.get("name", e["id"]),
-                 "role": e.get("role", "")}))
+                 "role": e.get("role", ""), "room": e.get("room", "")}))
         pipe.execute()
         return len(entities)
     except Exception as exc:
@@ -155,10 +155,71 @@ def _shape(r, rows, kind, role, limit) -> list[dict]:
         if role and m.get("role") != role:
             continue
         out.append({"id": eid, "name": m.get("name", eid), "kind": m.get("kind", ""),
-                    "role": m.get("role", ""), "dist": round(float(dist), 1)})
+                    "role": m.get("role", ""), "room": m.get("room", ""),
+                    "dist": round(float(dist), 1)})
         if len(out) >= limit:
             break
     return out
+
+
+def room_summary() -> list[dict]:
+    """Everyone on the city map grouped by their room — for the office radar and the
+    terminal's team_map. Returns [{room, members:[{name, role, kind}]}], the rooms
+    with the most people first; buildings (no room) fall under 'City'."""
+    r = _redis()
+    if r is None:
+        return []
+    try:
+        ids = r.zrange(_city(), 0, -1)
+    except Exception:
+        return []
+    meta = _meta_of(r, ids)
+    rooms: dict[str, list] = {}
+    for eid in ids:
+        m = meta.get(eid, {})
+        room = m.get("room") or ("City" if m.get("kind") == "building" else "Unassigned")
+        rooms.setdefault(room, []).append(
+            {"name": m.get("name", eid), "role": m.get("role", ""),
+             "kind": m.get("kind", "")})
+    out = [{"room": k, "members": v} for k, v in rooms.items()]
+    out.sort(key=lambda d: (d["room"] == "City", -len(d["members"]), d["room"]))
+    return out
+
+
+def in_room(room: str, *, role: str = "") -> list[dict]:
+    """Members of the room whose label contains `room` (optionally a single role)."""
+    needle = (room or "").strip().lower()
+    if not needle:
+        return []
+    for grp in room_summary():
+        if needle in grp["room"].lower():
+            ms = grp["members"]
+            if role:
+                want = role.strip().lower()
+                ms = [m for m in ms if m.get("role", "").lower() == want]
+            return ms
+    return []
+
+
+def resolve(name: str) -> str | None:
+    """The first entity id whose name (or id) contains `name`, case-insensitive —
+    so 'cafe' finds 'bld:cafe' / 'Bean Scene Cafe'. For name→id lookups from chat."""
+    r = _redis()
+    if r is None or not name:
+        return None
+    try:
+        meta = r.hgetall(_meta())
+    except Exception:
+        return None
+    needle = name.lower()
+    for eid, blob in meta.items():
+        try:
+            nm = (json.loads(blob).get("name") or "").lower()
+        except Exception:
+            nm = ""
+        if needle in nm or needle in eid.lower():
+            return eid
+    return None
 
 
 def count() -> int:

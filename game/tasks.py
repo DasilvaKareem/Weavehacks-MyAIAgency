@@ -62,21 +62,21 @@ def _team(n: int) -> Callable[[dict], bool]:
 TASKS: list[Task] = [
     # --- Chapter 1: The Idea -------------------------------------------------
     Task("name",        "The Idea", "Name your company",        "Every empire needs a name.",
-         ask="What's the company called?", field="company_name", reward=1000),
+         ask="What's the company called?", field="company_name", reward=3000),
     Task("pitch",       "The Idea", "Write your one-line pitch", "What do you do, in a sentence?",
-         ask="Pitch it in one line", field="pitch", reward=1000),
+         ask="Pitch it in one line", field="pitch", reward=3000),
     Task("customer",    "The Idea", "Name your target customer", "Who is this actually for?",
-         ask="Who's your customer?", field="customer", reward=1000),
+         ask="Who's your customer?", field="customer", reward=3000),
     Task("competitors", "The Idea", "Size up the competition",   "Note who you're up against.",
-         ask="Who are your main competitors?", field="competitors", reward=1500),
+         ask="Who are your main competitors?", field="competitors", reward=4500),
     # field is "business_model" (NOT "model" — that key is the CEO's avatar gltf in
     # the appearance profile; reusing it would swap the player's character model).
     Task("model",       "The Idea", "Sketch your business model", "How does this make money?",
-         ask="How does it make money?", field="business_model", reward=1500),
+         ask="How does it make money?", field="business_model", reward=4500),
     Task("cofounder",   "The Idea", "Win over co-founder Robin",  "Buy Robin a coffee and pitch them.",
-         ask="Why should Robin bet on you?", field="cofounder_pitch", reward=4000),
+         ask="Why should Robin bet on you?", field="cofounder_pitch", reward=12000),
     Task("seed",        "The Idea", "Raise your seed money",       "Pitch an angel investor for a first check.",
-         ask="Pitch your idea — why fund it?", field="seed_pitch", reward=10000),
+         ask="Pitch your idea — why fund it?", field="seed_pitch", reward=30000),
 
     # --- Around Town: chat with the locals for tips + a little cash ----------
     Task("city_tour",     "Around Town", "Get to know the city",   "Visit Fresh Market and chat with the city guide.",),
@@ -91,19 +91,19 @@ TASKS: list[Task] = [
     # The canvas's nine blocks; customer segments (customer) and revenue streams
     # (business_model/pricing) are covered above, so these are the other seven.
     Task("value_prop",     "Business Model Canvas", "Define your value proposition", "The core promise to customers.",
-         ask="What's your core value proposition?", field="value_prop", reward=1000),
+         ask="What's your core value proposition?", field="value_prop", reward=3000),
     Task("channels",       "Business Model Canvas", "Map your channels",            "How you reach and deliver to customers.",
-         ask="How do you reach customers?", field="channels", reward=800),
+         ask="How do you reach customers?", field="channels", reward=2400),
     Task("relationships",  "Business Model Canvas", "Plan customer relationships",  "How you win, keep, and grow customers.",
-         ask="How do you keep customers?", field="relationships", reward=800),
+         ask="How do you keep customers?", field="relationships", reward=2400),
     Task("key_resources",  "Business Model Canvas", "List your key resources",      "What you must have to deliver.",
-         ask="What key resources do you need?", field="key_resources", reward=800),
+         ask="What key resources do you need?", field="key_resources", reward=2400),
     Task("key_activities", "Business Model Canvas", "Name your key activities",     "The most important things you do.",
-         ask="What are your key activities?", field="key_activities", reward=800),
+         ask="What are your key activities?", field="key_activities", reward=2400),
     Task("partnerships",   "Business Model Canvas", "Line up key partners",         "Who you rely on to make it work.",
-         ask="Who are your key partners?", field="partnerships", reward=800),
+         ask="Who are your key partners?", field="partnerships", reward=2400),
     Task("cost_structure", "Business Model Canvas", "Map your cost structure",      "What it costs to run the business.",
-         ask="What are your biggest costs?", field="cost_structure", reward=1000),
+         ask="What are your biggest costs?", field="cost_structure", reward=3000),
 
     # --- Chapter 2: Set Up Shop ---------------------------------------------
     Task("office",      "Set Up Shop", "Lease your first office", "Walk up to a building and lease it.",
@@ -112,13 +112,13 @@ TASKS: list[Task] = [
     Task("engineer",    "Set Up Shop", "Hire your first engineer", "Someone has to build it.",
          auto=_has_role("Engineer")),
     Task("logo",        "Set Up Shop", "Design a logo",            "Give a Designer the brief.",
-         ask="Describe the logo you want", field="logo", reward=1200),
+         ask="Describe the logo you want", field="logo", reward=3600),
     Task("domain",      "Set Up Shop", "Register a domain",        "Stake your claim on the web.",
-         ask="What domain do you want?", field="domain", reward=1200),
+         ask="What domain do you want?", field="domain", reward=3600),
     Task("website",     "Set Up Shop", "Launch your website",      "Publish a real site (Engineer/Blogger).",
          auto=lambda s: s.get("website", False)),
     Task("brand",       "Set Up Shop", "Choose your brand colors", "Make it look like you.",
-         ask="Describe your brand & colors", field="brand", reward=1200),
+         ask="Describe your brand & colors", field="brand", reward=3600),
 
     # --- Chapter 3: Build the Product ---------------------------------------
     Task("mvp",         "Build the Product", "Ship the MVP",          "The smallest thing worth shipping."),
@@ -150,7 +150,7 @@ TASKS: list[Task] = [
          auto=_has_role("Analyst")),
     Task("dashboard",   "Scale Up", "Build a metrics dashboard", "One screen, the whole company."),
     Task("pricing",     "Scale Up", "Set your pricing",         "Decide what you're worth.",
-         ask="How do you price it?", field="pricing", reward=1000),
+         ask="How do you price it?", field="pricing", reward=3000),
     Task("revenue",     "Scale Up", "Make your first revenue",  "The first dollar is the hardest."),
 
     # --- Chapter 6: Build a Company -----------------------------------------

@@ -93,6 +93,50 @@ class BuildingInterior:
         east = [k for k in top_wings if self.rooms[k].slot == "east"]
         return (east or top_wings)[0]
 
+    def _adjacency(self) -> dict:
+        """room key -> list of (neighbor_key, Portal in this room to take). The
+        elevator is a hub<->hub hyperlink (its Portal.to is None, so it stands in
+        for every *other* hub). Park exits aren't traversable by bots."""
+        adj: dict = {k: [] for k in self.rooms}
+        for k, r in self.rooms.items():
+            for p in r.portals:
+                if p.kind == EXIT:
+                    continue
+                if p.kind == ELEVATOR:
+                    for hub in self.hub_keys:
+                        if hub != k:
+                            adj[k].append((hub, p))
+                elif p.to in self.rooms:
+                    adj[k].append((p.to, p))
+        return adj
+
+    def next_hop(self, src: str, dst: str):
+        """The Portal in room `src` to walk to first to reach room `dst` (BFS over
+        the room graph), or None if unreachable / already there."""
+        if src == dst or src not in self.rooms or dst not in self.rooms:
+            return None
+        adj = self._adjacency()
+        # BFS, remembering the first portal taken out of src on each path.
+        frontier = [(nb, portal) for nb, portal in adj[src]]
+        seen = {src}
+        while frontier:
+            nxt = []
+            for room_key, first_portal in frontier:
+                if room_key == dst:
+                    return first_portal
+                if room_key in seen:
+                    continue
+                seen.add(room_key)
+                for nb, _portal in adj[room_key]:
+                    if nb not in seen:
+                        nxt.append((nb, first_portal))
+            frontier = nxt
+        return None
+
+    def other_rooms(self, key: str) -> list:
+        """Every room key except `key` (bots roam to these)."""
+        return [k for k in self.rooms if k != key]
+
     def floor_menu(self, plans) -> list:
         """[(level, label, room_key, entry_pos)] for the elevator's floor picker."""
         out = []

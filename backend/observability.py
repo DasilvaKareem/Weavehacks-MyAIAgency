@@ -132,11 +132,14 @@ def score_call(call, scorers=None, background: bool = True) -> None:
         return
 
     def _run():
-        import asyncio
+        from .async_loop import run as _run_async
 
         for s in scs:
             try:
-                asyncio.run(call.apply_scorer(s))  # apply_scorer is async
+                # Run on the shared loop (not a throwaway asyncio.run): the scorer's
+                # Gemini judge reuses the cached client, whose aiohttp session must
+                # stay bound to a live loop or it raises "Timeout context manager…".
+                _run_async(call.apply_scorer(s))  # apply_scorer is async
             except Exception as exc:  # judge/network hiccup — drop this score only
                 log.debug("apply_scorer(%s) failed: %s", getattr(s, "name", s), exc)
 

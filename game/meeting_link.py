@@ -24,6 +24,10 @@ class MeetingLink:
         self._seen = 0         # SQLite fallback cursor
         self.voice_mode = "local"  # off | local | daily
         self.room_url = ""     # set when a Daily boardroom call goes live
+        self._ceo_lines: list[str] = []   # live lines the human CEO typed in
+        self._ceo_lock = threading.Lock()
+        self._stop = threading.Event()    # set when the CEO closes the meeting
+        self._wake = threading.Event()    # set when a new CEO line is queued
 
     @staticmethod
     def daily_available() -> str | None:
@@ -39,6 +43,10 @@ class MeetingLink:
         self.topic = topic
         self.voice_mode = voice_mode
         self.room_url = ""
+        self._stop.clear()
+        self._wake.clear()
+        with self._ceo_lock:
+            self._ceo_lines = []
         self._orch = MeetingOrchestrator(store=self.store)
         self.cid, self.members = self._orch.open_meeting(topic, agent_ids)
         if self._orch.meetings is not None:
@@ -58,12 +66,35 @@ class MeetingLink:
             if self.voice_mode == "daily":
                 self._run_daily(topic, max_turns, mode)
             else:
-                # off / local: the brain posts turns to RTDB/SQLite; the panel
-                # polls + (in local mode) voices them via its own VoicePlayer.
-                self._orch.run_meeting(self.cid, topic, self.members,
-                                       max_turns=max_turns, mode=mode)
+                # off / local: a human-driven meeting. The team responds to the
+                # CEO's typed prompts and NOTHING is ever spoken in the CEO's
+                # name — no AI facilitator, no AI-authored decision. Stays live
+                # until the CEO closes the panel. The panel polls turns from
+                # RTDB/SQLite and (in local mode) voices the agents.
+                self._orch.run_interactive_meeting(
+                    self.cid, topic, self.members,
+                    turns_per_round=max_turns, mode=mode,
+                    get_ceo=self._drain_ceo, stop=self._stop, wake=self._wake)
         except Exception:
             pass  # surfaced to the UI via running() going False
+
+    def say(self, text: str) -> None:
+        """Queue a live line from the human CEO. The orchestrator folds it into
+        the call before the next agent turn, so the team actually responds to the
+        boss instead of deciding the company's future without them."""
+        text = (text or "").strip()
+        if not text:
+            return
+        with self._ceo_lock:
+            self._ceo_lines.append(text)
+        self._wake.set()
+
+    def _drain_ceo(self) -> list[str]:
+        """Hand the orchestrator (on its worker thread) any CEO lines typed since
+        the last turn, and clear the queue. Thread-safe."""
+        with self._ceo_lock:
+            out, self._ceo_lines = self._ceo_lines, []
+        return out
 
     def _run_daily(self, topic, max_turns, mode) -> None:
         """Voice this same meeting into a live Daily room and open a browser to
@@ -120,6 +151,8 @@ class MeetingLink:
         return self._thread is not None and self._thread.is_alive()
 
     def shutdown(self) -> None:
+        self._stop.set()      # tell the interactive loop to wrap up + save
+        self._wake.set()      # unblock it from waiting on the next CEO line
         if self._sub is not None:
             self._sub.close()
             self._sub = None

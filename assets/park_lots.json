@@ -206,7 +206,7 @@
     200
    ],
    "task": "customer",
-   "reward": 1600,
+   "reward": 4800,
    "blurb": "Registered with the Chamber. They helped you pin down exactly who you're for."
   },
   {
@@ -222,7 +222,7 @@
     90
    ],
    "task": "domain",
-   "reward": 1200,
+   "reward": 3600,
    "blurb": "Filed the paperwork \u2014 your domain and business name are officially yours."
   },
   {
@@ -238,7 +238,7 @@
     180
    ],
    "task": "competitors",
-   "reward": 1400,
+   "reward": 4200,
    "blurb": "Insight Research handed over a competitor teardown. You know the field now."
   },
   {
@@ -254,7 +254,7 @@
     130
    ],
    "task": "model",
-   "reward": 1400,
+   "reward": 4200,
    "blurb": "The Bureau walked you through revenue models. Your business model is sketched."
   },
   {
@@ -270,7 +270,7 @@
     70
    ],
    "task": "logo",
-   "reward": 1200,
+   "reward": 3600,
    "blurb": "Ace Sign & Print mocked up your logo. It actually looks like a company."
   },
   {
@@ -286,7 +286,7 @@
     150
    ],
    "task": "brand",
-   "reward": 1000,
+   "reward": 3000,
    "blurb": "Hue Studio nailed your brand palette. Everything matches now."
   },
   {
@@ -302,7 +302,7 @@
     110
    ],
    "task": "pricing",
-   "reward": 1000,
+   "reward": 3000,
    "market": "bank",
    "plan": "bank",
    "blurb": "The bank's advisor helped you set pricing that won't leave money on the table."
@@ -374,7 +374,7 @@
     90
    ],
    "task": "seed",
-   "reward": 10000,
+   "reward": 30000,
    "blurb": "Apex's seed desk loved the pitch and wired you $5,000 to get off the ground \u2014 your first outside money."
   },
   {
@@ -437,7 +437,7 @@
    ],
    "game": "farm",
    "plan": "bank",
-   "blurb": "The Trade Embassy runs your overseas venture — a farm in South America that earns passive income while you build."
+   "blurb": "The Trade Embassy runs your overseas venture \u2014 a farm in South America that earns passive income while you build."
   },
   {
    "id": "casino",
@@ -452,7 +452,7 @@
     80
    ],
    "task": "risk_tips",
-   "reward": 800,
+   "reward": 2400,
    "game": "slots",
    "plan": "bank",
    "blurb": "The pit boss schooled you on runway and risk \u2014 cash is oxygen, never bet the company."
@@ -470,7 +470,7 @@
     120
    ],
    "task": "money_tips",
-   "reward": 600,
+   "reward": 1800,
    "plan": "bank",
    "blurb": "The baker filled you in on how money flows in this town \u2014 earn, raise, price right, stay lean."
   },
@@ -487,7 +487,7 @@
     200
    ],
    "task": "network_tips",
-   "reward": 500,
+   "reward": 1500,
    "plan": "bank",
    "blurb": "The barber reminded you: your network is your net worth, and word of mouth beats any ad."
   },
@@ -504,7 +504,7 @@
     140
    ],
    "task": "strategy_tips",
-   "reward": 600,
+   "reward": 1800,
    "plan": "bank",
    "blurb": "The bookseller's advice: do one thing better than anyone, and measure what matters."
   },
@@ -535,7 +535,7 @@
     120
    ],
    "task": "wellness_tips",
-   "reward": 500,
+   "reward": 1500,
    "plan": "bank",
    "blurb": "The pharmacist's reminder: it's a marathon \u2014 rest, lean on your team, and don't burn out."
   },
@@ -552,7 +552,7 @@
     90
    ],
    "task": "city_tour",
-   "reward": 600,
+   "reward": 1800,
    "plan": "bank",
    "blurb": "The Fresh Market city guide showed you the ropes \u2014 you know your way around town now."
   },
@@ -569,7 +569,7 @@
     60
    ],
    "task": "hustle_tips",
-   "reward": 600,
+   "reward": 1800,
    "plan": "bank",
    "blurb": "The shopkeeper's hustle lesson: do things that don't scale, ship scrappy, chase quick wins."
   },
@@ -586,7 +586,7 @@
     70
    ],
    "task": "cofounder",
-   "reward": 4000,
+   "reward": 12000,
    "blurb": "You bought Robin a coffee and laid it all out. They're in \u2014 your first believer, and your co-founder."
   }
  ],

@@ -24,7 +24,7 @@ def _float(name: str, default: float) -> float:
 
 
 # --- Model ---
-GEMINI_MODEL = os.getenv("COMPANY_AI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.getenv("COMPANY_AI_MODEL", "gemini-3.5-flash")
 GEMINI_TEMPERATURE = _float("COMPANY_AI_TEMPERATURE", 0.7)
 # The cheapest model the optimizer can downgrade an expensive role to (used by
 # backend/optimizer.py when a role's cost is driven by model price, not tools).
@@ -81,7 +81,9 @@ def apify_mcp_url(actors=None) -> str:
         url += ("&" if "?" in url else "?") + "actors=" + chosen
     return url
 # Max model<->tool round-trips per agent turn before it must give a final answer.
-MCP_MAX_TOOL_STEPS = _int("COMPANY_AI_MCP_STEPS", 6)
+# The terminal's orchestrator persona is tool-heavy (drive/memory/dispatch), so 6
+# was too few — it would burn the budget mid-tool-call and never reach a reply.
+MCP_MAX_TOOL_STEPS = _int("COMPANY_AI_MCP_STEPS", 16)
 
 # --- Daytona cloud sandbox (Software Engineer agent) ---
 # Daytona runs code in a secure, ephemeral REMOTE sandbox, so — unlike the local
@@ -366,11 +368,22 @@ ROLE_PROFILES = {
             "agent_economics (cost/latency/tokens/error-rate broken down BY agent), "
             "optimization_verdict (the weakest-link agent + a concrete fix to "
             "coach/re-model/fire them), and recent_failures (latest errored calls). "
-            "When the CEO asks about cost, performance, reliability, or 'who should "
-            "we optimize/fire', call these tools and report concrete numbers from "
-            "the real traces — never guess. Lead with agent_economics and "
-            "optimization_verdict. If no traces come back, say tracing isn't set up "
-            "yet (WANDB_API_KEY must be set and the company must have run once)."
+            "You ALSO have apply_optimization, which actually enacts the verdict — it "
+            "records a per-role override (cheaper model or smaller tool budget) the "
+            "workers obey on their next run. When the CEO says 'optimize the company' "
+            "or 'make us cheaper', CALL apply_optimization and report exactly what it "
+            "changed.\n"
+            "HARD RULES — you are a measurement instrument, not a storyteller:\n"
+            "1. NEVER state a cost, latency, token count, error rate, or agent name "
+            "from memory. EVERY number you report must come from a tool call you made "
+            "in THIS reply. If you haven't called a tool yet, call one before "
+            "answering — no exceptions.\n"
+            "2. For any question about cost / performance / reliability / 'who should "
+            "we optimize or fire', lead with agent_economics and optimization_verdict.\n"
+            "3. If a tool returns no data (or says tracing isn't set up), say EXACTLY "
+            "that — 'I don't have trace data yet; the company needs to run or you need "
+            "to chat with agents so their work is traced.' Do NOT invent numbers to "
+            "fill the gap. A figure you didn't get from a tool does not exist."
         ),
     },
     # "engineer" is checked after "devops", so "DevOps Engineer" still routes to

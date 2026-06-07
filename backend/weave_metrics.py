@@ -521,6 +521,71 @@ def workforce_leaderboard(calls) -> list:
     return rows
 
 
+# --- per-agent failure diagnosis (the MONITOR click-through) ----------------
+
+def _exc_text(call) -> str:
+    """A short human message out of a call's exception (shape varies by SDK)."""
+    exc = getattr(call, "exception", None)
+    if not exc:
+        return ""
+    s = str(exc).strip()
+    # Weave often stores the exception as a JSON-ish blob with a "message" field.
+    import re
+    m = re.search(r'"message"\s*:\s*"([^"]+)"', s)
+    if m:
+        return m.group(1)
+    return s.splitlines()[0][:200]
+
+
+def agent_failures(calls, agent_id: str, limit: int = 5) -> list:
+    """Recent crashed attempts for ONE hired agent, newest-first.
+
+    Returns [{op, error}] from that agent's agent_attempt/chat_attempt ops that
+    carried an exception — the raw 'why' behind a crash-rate number.
+    """
+    out = []
+    for c in calls:
+        if attrs(c).get("agent_id") != agent_id:
+            continue
+        if not is_attempt(c):
+            continue
+        err = _exc_text(c)
+        if err:
+            out.append({"op": op_short(c), "error": err})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def suggest_fix(error: str) -> str:
+    """A concrete, plain-English fix for a known crash signature."""
+    e = (error or "").lower()
+    if "timeout context manager" in e or "attached to a different loop" in e:
+        return ("Async event-loop bug (now patched) — relaunch the game and this "
+                "agent will reply fine. No further action needed.")
+    if any(k in e for k in ("429", "rate limit", "resourceexhausted", "quota")):
+        return ("Hitting Gemini rate limits — switch this role to a cheaper/less-busy "
+                "model or cut its tool budget (apply_optimization), then retry.")
+    if "timed out" in e or "deadline" in e or "timeout" in e:
+        return ("The model call timed out — reduce this role's tool-step budget so "
+                "turns are shorter (apply_optimization), or just retry.")
+    if "api key" in e or "permission" in e or "401" in e or "403" in e:
+        return ("Auth/permission error — a tool's credential is missing. Check the "
+                "integration's API key in .env.")
+    if "tool" in e:
+        return ("A tool call failed — the integration may be unconfigured. Check its "
+                "credentials, or have the agent answer without that tool.")
+    return ("Coach or retry this agent; if it keeps failing, switch its model or "
+            "re-hire (apply_optimization names the weakest role).")
+
+
+def diagnose_agent(calls, agent_id: str) -> dict:
+    """Failures + a one-line fix for one agent — the MONITOR click-through payload."""
+    fails = agent_failures(calls, agent_id)
+    fix = suggest_fix(fails[0]["error"]) if fails else ""
+    return {"failures": fails, "fix": fix}
+
+
 def render_leaderboard(rows: list) -> str:
     """Text leaderboard for the People Analytics Lead's tool reply."""
     if not rows:

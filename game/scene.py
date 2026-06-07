@@ -52,11 +52,13 @@ class Scene:
         # the left wall (walk up + E opens the Company Dossier). Same in every room.
         w, d = self._floor
         self._records_pos = (-w / 2 + 0.5, -d * 0.05)
-        # The CEO Desk: a fixed executive desk against the back wall (left of the
-        # door, which sits at +w*0.28), facing +z into the room. Walk up + E opens
+        # The CEO Desk: an executive desk in the OPEN FRONT band, a couple of steps
+        # to the right of where the CEO spawns (front-centre), so the computer is
+        # always reachable no matter how many agents fill the desk rows behind it.
+        # Faces +z, so its glowing screen reads toward the camera. Walk up + E opens
         # the Global AI Terminal. Only drawn when show_ceo_desk is set (the CEO's
         # own office room — see main._activate_room).
-        self._ceo_desk_pos = (-w * 0.26, -d / 2 + 1.5)
+        self._ceo_desk_pos = (w * 0.16, d / 2 - 1.6)
 
     def set_floor_color(self, rgb) -> None:
         self.floor_color = _color(rgb)

@@ -85,6 +85,20 @@ def _post_task_result(store: AgentStore, task: dict, result: str, agent) -> None
                               f"(task) {task.get('text','')}\n\n{result}")
         except Exception:
             pass
+    # Work the CEO fired from the terminal returns to the terminal: append a SHORT
+    # summary to the active session (the full result is already in the agent's chat
+    # above, so keep the terminal log light — cheap to re-wrap and draw).
+    if task.get("source") == "terminal":
+        try:
+            from .ceo_terminal import CompanyTerminal
+            label = who if agent else (task.get("role") or "the team")
+            summary = " ".join(str(result).split())
+            if len(summary) > 200:
+                summary = summary[:200].rstrip() + "…"
+            CompanyTerminal(store).append(
+                "ai", f"[done · {label}] {str(task.get('text','')).strip()[:80]}\n{summary}")
+        except Exception:
+            pass
 
 
 def run_service(store: AgentStore, *, once: bool = False) -> None:
@@ -128,6 +142,33 @@ def run_service(store: AgentStore, *, once: bool = False) -> None:
         finally:
             dispatcher.stop()
             pool.shutdown(wait=True)
+
+
+def start_background(db_path: str | None = None):
+    """Run the always-on worker in a daemon thread (for in-process use by the game),
+    so scheduled 24/7 jobs fire while you play. Returns the Thread, or None if it's
+    disabled (COMPANY_AI_WORKER=0) or another worker already holds the db lock.
+
+    Safe to call unconditionally: with no jobs scheduled it just polls cheaply, and
+    it never blocks the game — failures (no API key, lock held) are swallowed.
+    """
+    import os
+    import threading
+
+    if os.getenv("COMPANY_AI_WORKER", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+
+    def _run() -> None:
+        try:
+            run_service(AgentStore(db_path) if db_path else AgentStore())
+        except RuntimeError as exc:        # another worker holds the singleton lock
+            print(f"[worker] not started: {exc}")
+        except Exception as exc:           # never take the game down with us
+            print(f"[worker] stopped: {type(exc).__name__}: {exc}")
+
+    thread = threading.Thread(target=_run, name="company-worker", daemon=True)
+    thread.start()
+    return thread
 
 
 def main(argv: list[str] | None = None) -> int:

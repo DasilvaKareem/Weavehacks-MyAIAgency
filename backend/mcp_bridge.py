@@ -212,16 +212,39 @@ async def run_tool_loop(llm, messages, tools, max_steps: int | None = None,
                 result = f"[tool error: {exc}]"
             convo.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
 
+    final = _flatten(last).strip()
+    if final or not (getattr(last, "tool_calls", None) or []):
+        return final
+    # The step budget ran out while the model was STILL calling tools and it never
+    # wrote a closing answer — returning "" here is what made the terminal/chat look
+    # dead. Do one final, tool-free round (unbound llm) so the model must turn the
+    # tool results it already has into a real answer instead of an empty reply.
+    if on_step:
+        on_step("wrapping up")
+    if on_token:
+        on_token(None)             # drop any preamble streamed during the last round
+    convo.append(("human",
+                  "You've hit the tool-call limit for this turn. Stop calling tools "
+                  "and give your best final answer now, using what you already have."))
+    last = await _stream_round(llm, convo, on_token)
     return _flatten(last).strip()
 
 
 def run_tool_loop_sync(llm, messages, tools, max_steps: int | None = None,
                        on_step=None, on_token=None) -> str:
-    """Synchronous wrapper for callers off the event loop (e.g. the chat thread)."""
-    return asyncio.run(
+    """Synchronous wrapper for callers off the event loop (e.g. the chat thread).
+
+    Runs on the shared process-wide loop (async_loop) rather than a throwaway
+    ``asyncio.run()`` loop, so the cached Gemini client's aiohttp session stays
+    bound to a live loop across calls — otherwise the 2nd+ reply crashes with
+    "Timeout context manager should be used inside a task" (the "100% crash" bug).
+    """
+    from .async_loop import run as _run_async
+    return _run_async(
         run_tool_loop(llm, messages, tools, max_steps, on_step, on_token))
 
 
 def load_tools_sync(servers=None, apify_actors=None) -> list:
     """Synchronous tool load for callers off the event loop."""
-    return asyncio.run(load_tools(servers, apify_actors))
+    from .async_loop import run as _run_async
+    return _run_async(load_tools(servers, apify_actors))

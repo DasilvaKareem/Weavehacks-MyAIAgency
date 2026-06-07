@@ -1,6 +1,8 @@
 """2D HUD overlay drawn on top of the 3D scene."""
 from __future__ import annotations
 
+import math
+
 import pyray as pr
 
 from . import config, gamepad, roster
@@ -60,17 +62,63 @@ def draw_hud(company_name: str, cash: int, agent_count: int, hire_cost: int,
     pr.draw_text(hint, 18, pr.get_screen_height() - 28, 18, pr.LIGHTGRAY)
 
 
+# Name-tag culling so a crowded office doesn't become an unreadable wall of text:
+# only tag characters in front of and near the camera, draw the nearest first, and
+# skip any tag whose box would overlap one already placed this frame.
+_LABEL_MAX_DIST = 14.0     # world units; past this an agent gets no floating tag
+_LABEL_FADE_DIST = 9.0     # tags start fading out beyond this
+_LABEL_MAX = 7             # hard cap on simultaneous tags (nearest win)
+
+
+def _rects_overlap(a, b) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+
 def draw_world_labels(characters, camera) -> None:
+    cam, tgt = camera.position, camera.target
+    fx, fy, fz = tgt.x - cam.x, tgt.y - cam.y, tgt.z - cam.z   # camera forward
+
+    # Gather visible candidates with their distance, nearest-first.
+    cands = []
     for ch in characters:
+        a = ch.label_anchor
+        dx, dy, dz = a.x - cam.x, a.y - cam.y, a.z - cam.z
+        if dx * fx + dy * fy + dz * fz <= 0:        # behind the camera
+            continue
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dist > _LABEL_MAX_DIST:
+            continue
+        cands.append((dist, ch))
+    cands.sort(key=lambda t: t[0])
+
+    sw_, sh_ = pr.get_screen_width(), pr.get_screen_height()
+    placed: list[tuple[int, int, int, int]] = []
+    for dist, ch in cands:
+        if len(placed) >= _LABEL_MAX:
+            break
         sp = pr.get_world_to_screen(ch.label_anchor, camera)
+        if sp.x < -60 or sp.x > sw_ + 60 or sp.y < -30 or sp.y > sh_ + 30:
+            continue
         name = ch.name
         sub = ch.role if not ch.dept else f"{ch.role} · {ch.dept}"
         nw = pr.measure_text(name, 16)
         sw = pr.measure_text(sub, 13)
         w = max(nw, sw)
-        pr.draw_rectangle(int(sp.x - w / 2) - 6, int(sp.y) - 3, w + 12, 38, pr.Color(0, 0, 0, 150))
-        pr.draw_text(name, int(sp.x - nw / 2), int(sp.y), 16, pr.RAYWHITE)
-        pr.draw_text(sub, int(sp.x - sw / 2), int(sp.y) + 18, 13, pr.Color(170, 200, 230, 255))
+        rx, ry = int(sp.x - w / 2) - 6, int(sp.y) - 3
+        box = (rx, ry, w + 12, 38)
+        if any(_rects_overlap(box, p) for p in placed):   # don't stack on a neighbour
+            continue
+        # Fade distant tags so nearby ones stand out.
+        t = 1.0 if dist <= _LABEL_FADE_DIST else \
+            max(0.0, 1.0 - (dist - _LABEL_FADE_DIST) / (_LABEL_MAX_DIST - _LABEL_FADE_DIST))
+        a = int(40 + 215 * t)
+        pr.draw_rectangle(rx, ry, w + 12, 38, pr.Color(0, 0, 0, int(150 * t)))
+        pr.draw_text(name, int(sp.x - nw / 2), int(sp.y), 16, pr.Color(255, 255, 255, a))
+        pr.draw_text(sub, int(sp.x - sw / 2), int(sp.y) + 18, 13,
+                     pr.Color(170, 200, 230, a))
+        placed.append(box)
 
 
 def _panel_button(rect, label, base, mouse) -> bool:

@@ -26,9 +26,24 @@ LINEUP = [
 ]
 
 
+# --- Parking-lot layout (world units) ---------------------------------------
+# The Auto Mall is a showroom BUILDING with a paved LOT of cars in front of it
+# (to the south, +z, where the CEO walks up). The 5 buyable models fill the
+# front rows as spinning ghost holograms; the rest of the grid is decorative
+# "stock" so the lot reads as a real, full dealership rather than a bare row.
+LOT_COLS = 3                          # parking columns across (X)
+LOT_ROWS = 3                          # parking rows front-to-back (Z)
+SLOT_W = 4.4                          # column pitch
+SLOT_D = 5.4                          # row pitch
+BUILDING_BACK = 10.5                  # showroom sits this far behind (−z of) lot centre
+CAR_YAW = 180.0                       # parked cars nosed in toward the building (−z)
+BUILDING_MODEL = "2Story_Sign.glb"    # storefront with a built-in sign board
+DECOR_MODELS = ["NormalCar1", "Bus", "Ambulance", "SchoolBus"]   # filler stock
+
+
 @dataclass
 class CarDeal:
-    """One car on the showroom floor."""
+    """One buyable car on the showroom floor."""
     model: str            # GLB basename in assets/cars
     name: str             # display name on the price tag
     price: int            # cost in $
@@ -38,19 +53,43 @@ class CarDeal:
     sold: bool = False    # True once bought — its ghost is replaced by the real car
 
 
-class Dealership:
-    """A row of ghost display cars centred on (origin_x, origin_z), spread along X."""
+@dataclass
+class LotCar:
+    """A decorative parked car filling out the lot — drawn solid, never for sale."""
+    model: str
+    x: float
+    z: float
+    yaw: float = CAR_YAW
 
-    def __init__(self, origin_x: float, origin_z: float, *,
-                 spacing: float = 3.0, yaw: float = 270.0) -> None:
-        self.x = origin_x
+
+class Dealership:
+    """A showroom building + a paved lot of display cars, centred on the lot
+    origin (origin_x, origin_z). The buyable lineup fills the front slots as
+    spinning ghosts; remaining slots are decorative stock."""
+
+    def __init__(self, origin_x: float, origin_z: float, *, yaw: float = CAR_YAW) -> None:
+        self.x = origin_x        # lot CENTRE (the AUTO MALL banner floats here)
         self.z = origin_z
-        n = len(LINEUP)
-        self.cars: list[CarDeal] = []
+        # The showroom building, set at the back of the lot, facing the CEO (+z).
+        self.building = (origin_x, origin_z - BUILDING_BACK, 0.0, BUILDING_MODEL)
+        # Paved pad covering the rows + the building apron.
+        self.pad = (origin_x, origin_z - SLOT_D / 2.0,
+                    LOT_COLS * SLOT_W + 3.0, LOT_ROWS * SLOT_D + 4.0)
+
+        def slot_pos(r: int, c: int) -> tuple[float, float]:
+            x = origin_x + (c - (LOT_COLS - 1) / 2.0) * SLOT_W
+            z = origin_z + SLOT_D - r * SLOT_D       # r=0 front (+z) .. back (−z)
+            return x, z
+
+        slots = [(r, c) for r in range(LOT_ROWS) for c in range(LOT_COLS)]  # front→back
+        self.cars: list[CarDeal] = []     # buyable ghost display cars (front rows)
         for i, (model, name, price) in enumerate(LINEUP):
-            off = (i - (n - 1) / 2.0) * spacing       # centre the row on the lot
-            self.cars.append(CarDeal(model, name, price,
-                                     x=origin_x + off, z=origin_z, yaw=yaw))
+            x, z = slot_pos(*slots[i])
+            self.cars.append(CarDeal(model, name, price, x=x, z=z, yaw=yaw))
+        self.decor: list[LotCar] = []     # decorative stock filling the rest of the lot
+        for j, (r, c) in enumerate(slots[len(LINEUP):]):
+            x, z = slot_pos(r, c)
+            self.decor.append(LotCar(DECOR_MODELS[j % len(DECOR_MODELS)], x, z, yaw))
 
     def nearest(self, px: float, pz: float, reach: float) -> CarDeal | None:
         """The unsold display car within `reach` of (px,pz), nearest first."""

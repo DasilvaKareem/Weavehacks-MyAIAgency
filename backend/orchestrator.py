@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import queue
-import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,20 +35,15 @@ class Orchestrator:
         from .observability import init_weave
 
         init_weave()  # turn on Weave tracing (no-op without WANDB_API_KEY)
+        from .async_loop import loop as _shared_loop
+
         self._graph = build_company_graph()
         self._events: "queue.Queue[AgentEvent]" = queue.Queue()
         self._active: set = set()   # in-flight run futures, for graceful shutdown
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._run_loop, name="company-backend", daemon=True
-        )
-        self._thread.start()
-
-    # --- thread plumbing ---------------------------------------------------
-
-    def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        # Share the ONE process-wide loop with the chat tool loop, so the cached
+        # Gemini client's aiohttp session is always used from the same live loop
+        # (a per-Orchestrator loop would leave chats crashing after a company run).
+        self._loop = _shared_loop()
 
     def submit(self, goal: str) -> "concurrent.futures.Future":
         """Thread-safe. Schedule a company run; returns a Future for the report."""
@@ -74,13 +68,12 @@ class Orchestrator:
                 return drained
 
     def shutdown(self, drain_timeout: float = 5.0) -> None:
-        """Let in-flight runs finish (up to drain_timeout), then stop the loop."""
+        """Let in-flight runs finish (up to drain_timeout). The loop is shared and
+        process-wide, so we DON'T stop it here — other callers (chat) keep using it."""
         import concurrent.futures
 
         if self._active:
             concurrent.futures.wait(set(self._active), timeout=drain_timeout)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=2.0)
 
     # --- the run ------------------------------------------------------------
 

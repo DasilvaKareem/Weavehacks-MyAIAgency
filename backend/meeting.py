@@ -186,6 +186,69 @@ class MeetingOrchestrator:
             self.meetings.close_meeting(cid)
         return MeetingResult(cid=cid, topic=topic, summary=summary, turns=len(transcript))
 
+    def run_interactive_meeting(self, cid: str, topic: str, members: dict, *,
+                                turns_per_round: int = 4, mode: str = "moderated",
+                                get_ceo=None, stop=None, wake=None) -> MeetingResult:
+        """Human-driven meeting: the CEO prompts, the team responds, repeat.
+
+        The AI NEVER speaks as the CEO and NEVER auto-authors a decision — the
+        only CEO words in the room are the ones the human actually typed. The
+        call stays live until the human closes it (the `stop` event). `get_ceo`
+        returns any new CEO lines typed since last drain; `wake` is set when a new
+        line arrives so we respond promptly instead of polling hot."""
+        ids = list(members)
+        roster = (self._roster_for_moderator(members, topic)
+                  if mode != "round_robin" else "")
+        # The topic the human typed is their opening prompt; seed the transcript
+        # with it (the panel shows it as the title) so the team has the ask.
+        transcript: list[tuple[str, str]] = [("CEO", topic)]
+        last_ceo = topic
+
+        def respond() -> None:
+            """One bounded round of agent turns reacting to the latest CEO line.
+            The moderator may end the round early; nobody speaks as the CEO."""
+            last = None
+            cap = max(2, min(turns_per_round, len(ids) + 1))
+            for _ in range(cap):
+                speaker = self._next_speaker(mode, ids, transcript, roster,
+                                             topic, len(transcript), last)
+                if speaker is None:        # moderator says this round's said enough
+                    break
+                row = members[speaker]
+                self._presence(cid, speaker, True)
+                try:
+                    text = self._speak(row, speaker, topic, members, transcript)
+                finally:
+                    self._presence(cid, speaker, False)
+                self._post(cid, speaker, row.name, text)
+                transcript.append((row.name, text))
+                last = speaker
+
+        respond()   # the team reacts to the opening prompt right away
+
+        while stop is None or not stop.is_set():
+            if wake is not None:
+                wake.wait(timeout=0.5)
+                wake.clear()
+            if stop is not None and stop.is_set():
+                break
+            lines = [l.strip() for l in ((get_ceo() if get_ceo else []) or [])
+                     if l and l.strip()]
+            if not lines:
+                continue
+            for line in lines:        # the human's own words, attributed to them
+                self._post(cid, CHAIR, "CEO", line)
+                transcript.append(("CEO", line))
+                last_ceo = line
+            respond()
+
+        # The saved "decision" is the human's own final prompt — never AI text.
+        self.store.finish_meeting(cid, last_ceo)
+        if self.meetings is not None:
+            self.meetings.close_meeting(cid)
+        return MeetingResult(cid=cid, topic=topic, summary=last_ceo,
+                             turns=len(transcript))
+
     def _presence(self, cid: str, agent_id: str, speaking: bool) -> None:
         if self.meetings is not None:
             self.meetings.set_presence(cid, agent_id, speaking)
@@ -347,10 +410,10 @@ class MeetingOrchestrator:
             f"You're in a team meeting. Topic: {topic}\n"
             f"Other attendees: {others} (plus the CEO).\n\n"
             f"Transcript so far:\n{_format_transcript(transcript)}\n\n"
-            "It's your turn. Give your take in 2-4 sentences, fully in character. "
-            "Build on what others said and add your role's perspective; push toward "
-            f"a decision.{recall_hint} Don't repeat points already made, and don't "
-            "narrate stage directions — just speak."
+            "It's your turn. Keep it to 1-2 punchy sentences, fully in character — "
+            "this is a fast-moving room, not a monologue. Build on what others said, "
+            f"add your role's angle, and push toward a decision.{recall_hint} Don't "
+            "repeat points already made, no preamble or stage directions — just speak."
         )
         msgs = [("system", system), ("human", human)]
         if tools:
@@ -364,8 +427,8 @@ class MeetingOrchestrator:
         human = (
             f"You are the CEO wrapping up a team meeting on: {topic}\n\n"
             f"Transcript:\n{_format_transcript(transcript)}\n\n"
-            "In 3-4 sentences, state the decision and concrete next steps the team "
-            "converged on. Be decisive."
+            "In 2 sentences max, state the decision and the single concrete next "
+            "step the team converged on. Be decisive — no recap."
         )
         company_ctx = company.context_for(self.store)   # keep the wrap-up on-strategy
         msgs = ([("system", company_ctx)] if company_ctx else []) + [("human", human)]
