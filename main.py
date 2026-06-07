@@ -38,8 +38,10 @@ from game.onboarding import OnboardingScreen
 from game.dossier_panel import DossierPanel
 from game.investor_panel import InvestorPanel
 from game import market as market_mod
+from game import farm as farm_mod
 from game.market_panel import MarketPanel
 from game.slot_panel import SlotPanel
+from game.farm_panel import FarmPanel
 from game.grant_panel import GrantPanel
 from game.prologue import Prologue
 from game.menu import MainMenu
@@ -141,7 +143,7 @@ class Game:
         self._intern_park = None       # bound to a GreenSpace in _enter_park
         # Bob, your childhood friend: waiting right where you spawn the first time you
         # arrive in the city, with a "!" overhead. Walk up + E and he welcomes you back
-        # and presses $1,000 of seed money into your hand — a one-time gift, gated on
+        # and presses $10,000 of seed money into your hand — a one-time gift, gated on
         # the persistent `bob_gift` flag so he's gone afterward (and stays gone after a
         # restart). _bob_done is loaded from the store once the link exists.
         self.bob = Character(name="Bob", role="Old Friend", x=0.0, z=0.0,
@@ -156,6 +158,46 @@ class Game:
         # one-time $2,500. Both flags load from the store once the link exists.
         self._bob_rescue_done = False      # already claimed the bailout?
         self._bob_rescue_pending = False   # texted you, waiting at the park?
+        # Mae, the small-business desk: stands in a city park. Talk to her (walk up +
+        # E) to unlock the affordable Starter Office (simple lobby + one wing, no
+        # elevator, $200/mo). Gated on the persistent `starter_office` flag.
+        self.lady = Character(name="Mae", role="Small-Biz Desk", x=0.0, z=0.0,
+                              color=pr.Color(210, 150, 190, 255), dept="Civic",
+                              model="Suit_Female.gltf", yaw=180.0)
+        roster.apply_look(self.lady, {"skin_idx": 3, "hair_idx": 3, "hair_style": 2, "eye_idx": 1})
+        self._lady_voice = voice.pick_voice("Mae")
+        self._starter_unlocked = False     # set from link.load_flag below
+        self._lady_talk = None             # current line index while chatting, else None
+        self._park_toast = ""              # transient park message (e.g. "locked — meet Mae")
+        self._park_toast_until = 0.0
+        # To-Do guide: pick a to-do on the Nokia and the city points the way to where
+        # it gets done (gold beacon over the building + an on-screen arrow). Holds the
+        # selected task key; the target world spot is re-resolved live each frame.
+        self._guide_key = None
+        # Civilian side-quest: Walter's lost pug, Biscuit. Talk to Walter in a park,
+        # go find Biscuit in another park, bring him back for a cash reward. Walter is
+        # human (apply_look); Biscuit is an animal model (its own fur material).
+        self.civilian = Character(name="Walter", role="Resident", x=0.0, z=0.0,
+                                  color=pr.Color(200, 200, 120, 255), dept="Civic",
+                                  model="Casual3_Male.gltf", yaw=180.0)
+        roster.apply_look(self.civilian, {"skin_idx": 1, "hair_idx": 5, "hair_style": 0, "eye_idx": 0})
+        self.pet = Character(name="Biscuit", role="Pug", x=0.0, z=0.0,
+                             color=pr.Color(210, 180, 140, 255), dept="", model="Pug.gltf")
+        self._civilian_voice = voice.pick_voice("Walter")
+        self._pet_done = False             # set from link.load_flag("pet_quest") below
+        self._pet_stage = 0                # 0 not started · 1 searching · 2 returning · 3 done
+        self._civilian_talk = None         # current line index while chatting, else None
+        # Civilian side-quest 2: Río the busker's stolen guitar. Talk to Río in a park,
+        # find the guitar (a drawn prop) stashed in another park, return it for $2,500.
+        self.busker = Character(name="Río", role="Busker", x=0.0, z=0.0,
+                                color=pr.Color(120, 180, 210, 255), dept="Civic",
+                                model="Casual2_Female.gltf", yaw=180.0)
+        roster.apply_look(self.busker, {"skin_idx": 5, "hair_idx": 1, "hair_style": 3, "eye_idx": 2})
+        self._busker_voice = voice.pick_voice("Río")
+        self._guitar_done = False          # set from link.load_flag("guitar_quest") below
+        self._guitar_stage = 0             # 0 offer · 1 searching · 2 returning · 3 done
+        self._busker_talk = None           # current line index while chatting, else None
+        self._guitar_pos = (0.0, 0.0)      # world (x,z) of the stashed guitar (set in _enter_park)
         # The building whose interior is currently active (starts at HQ).
         self.current_building = next((b for b in self.park.buildings if b.status == "hq"),
                                      self.park.buildings[0] if self.park.buildings else None)
@@ -204,6 +246,12 @@ class Game:
         self._bob_done = self.link.load_flag("bob_gift")   # already got the welcome gift?
         self._bob_rescue_done = self.link.load_flag("bob_rescue")
         self._bob_rescue_pending = self.link.load_flag("bob_rescue_pending")
+        self._starter_unlocked = self.link.load_flag("starter_office")
+        starter = next((b for b in self.park.buildings if b.id == "starter"), None)
+        if starter is not None and self._starter_unlocked:
+            starter.locked = False                  # already met Mae: lease it freely
+        self._pet_done = self.link.load_flag("pet_quest")   # already returned Biscuit?
+        self._guitar_done = self.link.load_flag("guitar_quest")   # already returned the guitar?
         self._last_persist = 0.0
         self._saved_cash = int(self.cash)
         self._saved_day = self.calendar.day
@@ -216,12 +264,17 @@ class Game:
         # The only place it's shown is the Nokia phone's To-Do screen (N → To-Do);
         # there's deliberately no on-screen panel or HUD chip for it.
         self.taskboard = tasks.TaskBoard(self.link.load_tasks())
+        # Mirror the Good-Deeds side-quest flags onto the To-Do board so finished ones
+        # show ✓ after a restart (the flags are the source of truth; see _sync_deeds).
+        self._sync_deeds()
         self.dialogue = dialogue.load()    # NPC story-beat lines (assets/dialogue.json)
         self.dossier = DossierPanel()      # view/edit the company decisions agents read
         self.investor = InvestorPanel()    # pitch the VC for a funding round
         self.market = market_mod.Market.load(self.link)   # idle stock-market state
+        self.farm = farm_mod.Farm.load(self.link)         # idle South-America farm
         self.market_panel = MarketPanel()  # bank/broker trading terminal
         self.slot_panel = SlotPanel()      # Lucky's Casino slot machine
+        self.farm_panel = FarmPanel()      # Trade Embassy idle farm
         self.grant_panel = GrantPanel()    # Grants Office: LLM-judged funding
         self.chat = ChatPanel(self.link)
         self.shop = ShopPanel(load_catalog())
@@ -281,10 +334,14 @@ class Game:
         )
         # Clock app: the phone reads the live date + time-of-day (to the minute).
         clock_bridge = SimpleNamespace(state=self._clock_state)
+        # To-do guide: the phone hands a task key to start(); the game lights up the
+        # city toward where it's done and tells the phone whether to close + navigate.
+        guide_bridge = SimpleNamespace(start=self._start_guide)
         self.phone = PhonePanel(self.link, self.coordinator,
                                 lambda: self.all_agents, self.inbox, self.taskboard,
                                 hire=hire_bridge, follow=follow_bridge,
-                                citymap=citymap_bridge, clock=clock_bridge)
+                                citymap=citymap_bridge, clock=clock_bridge,
+                                guide=guide_bridge)
         self.inbox.post("Company.AI",
                         "Welcome! Your team and the neighborhood reach you here. "
                         "Open the phone (N) and tap a message to read it.",
@@ -326,6 +383,7 @@ class Game:
         self._quest_buf = ""
         self._quest_line = 0            # which dialogue line of the current beat is showing
         self._quest_action = None       # store kind ("outfit"/"hire") when a greeting ends by opening a shop; None for a normal ask
+        self._quest_replay = False      # revisiting a finished stop → play its `done` lines, not the original
         self._reception_greeted = False  # front-desk greeting fires once per lobby visit; re-armed on each room entry
         # Quest buildings are entered like offices: you walk into a default floor and
         # talk (E) to one NPC inside. These hold the in-visit state; None when not in one.
@@ -361,6 +419,15 @@ class Game:
         self.link.set_flag("bob_gift", False)
         self.link.set_flag("bob_rescue", False)
         self.link.set_flag("bob_rescue_pending", False)
+        # Mae + the Starter Office reset too (the fresh Park relocks it from JSON).
+        self._starter_unlocked, self._lady_talk = False, None
+        self.link.set_flag("starter_office", False)
+        # Walter's lost-pet quest resets for the new city.
+        self._pet_done, self._pet_stage, self._civilian_talk = False, 0, None
+        self.link.set_flag("pet_quest", False)
+        # Río's stolen-guitar quest resets too.
+        self._guitar_done, self._guitar_stage, self._busker_talk = False, 0, None
+        self.link.set_flag("guitar_quest", False)
         self.company_name = "Company.AI"
         self.ceo_profile = None
         self.company = {}
@@ -371,6 +438,7 @@ class Game:
         self.taskboard = tasks.TaskBoard(set())
         self.phone.board = self.taskboard
         self.market = market_mod.Market.fresh()       # fresh portfolio for the new run
+        self.farm = farm_mod.Farm.fresh()             # fresh farm for the new run
         for lst in (self.all_agents, self.agents):
             lst.clear()
         self.characters[:] = [self.player.ch]
@@ -459,6 +527,22 @@ class Game:
         a loss or credits a win."""
         if action and action[0] == "cash":
             self.cash = max(0, self.cash + action[1])
+
+    def _do_farm_action(self, action) -> None:
+        """Apply a farm action to cash (single money source): buying a plot spends
+        the next-plot cost; collecting banks the accrued harvest. Persist after."""
+        if not action:
+            return
+        kind = action[0]
+        if kind == "buy":
+            cost = self.farm.cost(action[1])
+            if self.cash >= cost:
+                self.cash -= self.farm.buy(action[1])
+        elif kind == "collect":
+            self.cash += self.farm.collect()
+        else:
+            return
+        self.farm.save(self.link)
 
     def _refresh_tasks(self) -> None:
         """Auto-complete any to-do whose condition now holds (a role hired, a
@@ -988,11 +1072,11 @@ class Game:
                             ts=pr.get_time())
 
     # -- Bob, your childhood friend (welcome gift + emergency rescue) ----------
-    BOB_GIFT = 1000
+    BOB_GIFT = 10000
     BOB_LINES = [
         "Hey — look who it is! Welcome back to the city.",
         "I always knew you'd come back to build something of your own. I'm happy for you, truly.",
-        "Starting out's the hard part. Here — take this. A thousand bucks to get you going.",
+        "Starting out's the hard part. Here — take this. Ten thousand bucks to get you going.",
         "No, I insist. Go make it count — I've got high hopes for you.",
     ]
     # When you go flat broke, Bob texts you to meet at a park and spots you cash.
@@ -1087,19 +1171,17 @@ class Game:
         if self.mode == "park" and spot is not None:    # place him now if you're outside
             self.bob.x, self.bob.z, self.bob.y = spot.x + 2.0, spot.z + 1.0, 0.0
 
-    def _draw_bob_talk(self) -> None:
-        """The childhood-friend speech box at the bottom of the screen."""
-        lines = self._bob_lines(self._bob_mode)
-        line = lines[self._bob_talk]
+    def _draw_speech_box(self, name, subtitle, line, accent, action) -> None:
+        """A bottom-of-screen NPC speech box: name tab, subtitle, the wrapped spoken
+        line, and a right-aligned action hint. Shared by Bob and Mae."""
         W, H = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
         bw, bh = min(880, W - 80), 156
         x, y = (W - bw) // 2, H - bh - 40
-        accent = pr.Color(225, 170, 120, 255)
         pr.draw_rectangle(x, y, bw, bh, pr.Color(12, 16, 26, 235))
         pr.draw_rectangle_lines_ex(pr.Rectangle(x, y, bw, bh), 2, accent)
-        pr.draw_text("BOB", x + 22, y + 16, 22, accent)
-        pr.draw_text("your childhood friend", x + 80, y + 22, 14, pr.Color(150, 160, 180, 255))
-        # Word-wrap the spoken line to the box width.
+        pr.draw_text(name, x + 22, y + 16, 22, accent)
+        pr.draw_text(subtitle, x + 32 + pr.measure_text(name, 22), y + 22, 14,
+                     pr.Color(150, 160, 180, 255))
         rows, cur = [], ""
         for word in line.split():
             trial = (cur + " " + word).strip()
@@ -1114,12 +1196,428 @@ class Game:
         for row in rows[:3]:
             pr.draw_text(row, x + 22, ty, 22, pr.RAYWHITE)
             ty += 30
-        is_last = self._bob_talk == len(self.BOB_LINES) - 1
-        hint = f"Press  E / X  to accept  +${self.BOB_GIFT:,}" if is_last \
-            else "Press  E / X  to continue"
-        hw = pr.measure_text(hint, 16)
-        pr.draw_text(hint, x + bw - hw - 22, y + bh - 28, 16,
-                     pr.GOLD if is_last else pr.LIGHTGRAY)
+        label, highlight = action
+        hw = pr.measure_text(label, 16)
+        pr.draw_text(label, x + bw - hw - 22, y + bh - 28, 16,
+                     pr.GOLD if highlight else pr.LIGHTGRAY)
+
+    def _draw_bob_talk(self) -> None:
+        """The childhood-friend speech box at the bottom of the screen."""
+        lines = self._bob_lines(self._bob_mode)
+        is_last = self._bob_talk == len(lines) - 1
+        gift = self.BOB_RESCUE_GIFT if self._bob_mode == "rescue" else self.BOB_GIFT
+        action = ((f"Press  E / X  to accept  +${gift:,}", True) if is_last
+                  else ("Press  E / X  to continue", False))
+        self._draw_speech_box("BOB", "your childhood friend", lines[self._bob_talk],
+                              pr.Color(225, 170, 120, 255), action)
+
+    # -- Mae, the small-business desk (unlocks the affordable Starter Office) --
+    LADY_PARK_ID = "riverside_park"
+    LADY_LINES = [
+        "Oh — hello! You've got the look of someone about to start something. Am I right?",
+        "I run the small-business desk. Most folks think you need a tower and a big deposit. You don't.",
+        "There's a little place on 8th — the Starter Office. One room and a lobby, no elevator, just $200 a month.",
+        "It's yours to lease whenever you're ready. Go on — every empire starts in a small room.",
+    ]
+
+    def _lady_park(self):
+        """The park where Mae waits. Deterministic so she's findable across restarts."""
+        parks = self.park.parks
+        return (next((g for g in parks if g.id == self.LADY_PARK_ID), None)
+                or next((g for g in parks if g.id not in ("founders_green", "maple_commons")), None)
+                or (parks[0] if parks else None))
+
+    def _talk_to_lady(self) -> None:
+        """Begin Mae's conversation (freezes the park; stepped with E)."""
+        if self._starter_unlocked:
+            return
+        self._lady_talk = 0
+        self._e_cooldown = 8
+        voice.speak(self.LADY_LINES[0], self._lady_voice)
+        while pr.get_char_pressed() > 0:
+            pass
+
+    def _update_lady_talk(self) -> None:
+        advance = (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_ENTER)
+                   or pr.is_key_pressed(pr.KEY_SPACE) or gamepad.pressed(gamepad.CROSS)
+                   or gamepad.pressed(gamepad.TRIANGLE))
+        if not advance:
+            return
+        self._lady_talk += 1
+        if self._lady_talk >= len(self.LADY_LINES):
+            self._finish_lady()
+        else:
+            voice.speak(self.LADY_LINES[self._lady_talk], self._lady_voice)
+
+    def _finish_lady(self) -> None:
+        """Close the chat and unlock the Starter Office for leasing, for good."""
+        self._lady_talk = None
+        self._e_cooldown = 8
+        self._starter_unlocked = True
+        self.link.set_flag("starter_office", True)
+        starter = next((b for b in self.park.buildings if b.id == "starter"), None)
+        if starter is not None:
+            starter.locked = False
+            self.inbox.post("Mae", f"Lovely to meet you! The {starter.name} on 8th is "
+                            f"unlocked — a lobby and one wing, no elevator, ${starter.rent:,}/"
+                            f"month (${starter.deposit:,} to move in). Walk up and press E to "
+                            "sign. Find it on your phone map.", kind="system",
+                            subject="✓ Starter Office unlocked", ts=pr.get_time())
+
+    def _draw_lady_talk(self) -> None:
+        is_last = self._lady_talk == len(self.LADY_LINES) - 1
+        action = (("Press  E / X  to finish", True) if is_last
+                  else ("Press  E / X  to continue", False))
+        self._draw_speech_box("MAE", "small-business desk", self.LADY_LINES[self._lady_talk],
+                              pr.Color(220, 150, 195, 255), action)
+
+    # -- Walter's lost-pet quest (find Biscuit, return him for a reward) -------
+    PET_REWARD = 2500
+    PET_NAME = "Biscuit"
+    CIVILIAN_PARK_ID = "liberty_square"
+    PET_PARK_ID = "sunset_gardens"
+    CIVILIAN_OFFER_LINES = [
+        "Oh — excuse me! You look kind. I'm in a real spot here.",
+        "My little pug, Biscuit, slipped his leash and bolted. Brown coat, very waggy.",
+        "Someone said they saw him over by Sunset Gardens. Please — would you bring him home?",
+        "Do this for me and I'll give you $2,500. He's all I've got. Thank you, truly.",
+    ]
+    CIVILIAN_THANKS_LINES = [
+        "Biscuit! Oh — you found him! Come here, boy!",
+        "I was sick with worry. I can't believe it — you actually brought him back.",
+        "Here, $2,500 as promised, and then some kindness I can't repay. Bless you.",
+    ]
+
+    def _civilian_park(self):
+        parks = self.park.parks
+        return (next((g for g in parks if g.id == self.CIVILIAN_PARK_ID), None)
+                or (parks[0] if parks else None))
+
+    def _pet_park(self):
+        parks = self.park.parks
+        return (next((g for g in parks if g.id == self.PET_PARK_ID), None)
+                or (parks[-1] if parks else None))
+
+    def _civilian_lines(self):
+        return self.CIVILIAN_THANKS_LINES if self._pet_stage == 2 else self.CIVILIAN_OFFER_LINES
+
+    def _talk_to_civilian(self) -> None:
+        if self._pet_done or self._pet_stage not in (0, 2):
+            return
+        self._civilian_talk = 0
+        self._e_cooldown = 8
+        voice.speak(self._civilian_lines()[0], self._civilian_voice)
+        while pr.get_char_pressed() > 0:
+            pass
+
+    def _update_civilian_talk(self) -> None:
+        advance = (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_ENTER)
+                   or pr.is_key_pressed(pr.KEY_SPACE) or gamepad.pressed(gamepad.CROSS)
+                   or gamepad.pressed(gamepad.TRIANGLE))
+        if not advance:
+            return
+        lines = self._civilian_lines()
+        self._civilian_talk += 1
+        if self._civilian_talk >= len(lines):
+            self._finish_civilian()
+        else:
+            voice.speak(lines[self._civilian_talk], self._civilian_voice)
+
+    def _finish_civilian(self) -> None:
+        self._civilian_talk = None
+        self._e_cooldown = 8
+        if self._pet_stage == 0:                  # accepted the quest → go search
+            self._pet_stage = 1
+            where = (self._pet_park().name if self._pet_park() else "the park")
+            self._toast(f"Find {self.PET_NAME} near {where}.")
+            self.inbox.post("Walter", f"Thank you for helping. {self.PET_NAME} was last "
+                            f"seen near {where} — bring him home and there's $"
+                            f"{self.PET_REWARD:,} in it for you.", kind="system",
+                            subject=f"Lost dog: {self.PET_NAME}", ts=pr.get_time())
+        elif self._pet_stage == 2:                # returned the pet → reward
+            self._pet_stage = 3
+            self._pet_done = True
+            self.cash += self.PET_REWARD
+            self.link.set_flag("pet_quest", True)
+            self._persist_state(force=True)
+            self.inbox.post("Walter", f"You brought {self.PET_NAME} home safe. Here's $"
+                            f"{self.PET_REWARD:,}, with my deepest thanks. The whole "
+                            "neighborhood owes you one.", kind="system",
+                            subject=f"✓ Reunited {self.PET_NAME} · +${self.PET_REWARD:,}",
+                            ts=pr.get_time())
+
+    def _find_pet(self) -> None:
+        """Walk up to the lost pug: he perks up and starts following you home."""
+        if self._pet_stage != 1:
+            return
+        self._pet_stage = 2
+        self._e_cooldown = 8
+        ceo = self.player.ch
+        self.pet.x, self.pet.z = ceo.x + 1.0, ceo.z - 1.0   # trot to your side
+        self._toast(f"You found {self.PET_NAME}! Take him home to Walter.")
+        voice.speak("Yip! Yip!", self._civilian_voice)
+
+    def _update_pet_follow(self, dt: float) -> None:
+        """Biscuit trails the CEO (direct steering, like Robin — no navgrid)."""
+        ceo = self.player.ch
+        dx, dz = ceo.x - self.pet.x, ceo.z - self.pet.z
+        dist = math.hypot(dx, dz)
+        gap = 1.4
+        if dist > gap + 0.2:
+            tx, tz = ceo.x - dx / dist * gap, ceo.z - dz / dist * gap
+            running = dist > 5.0
+            speed = locomotion.RUN_SPEED if running else locomotion.WALK_SPEED
+            locomotion.move_toward(self.pet, tx, tz, speed, dt)
+            self.pet.x, self.pet.z = self.park.collide(self.pet.x, self.pet.z)
+            locomotion.apply_anim(self.pet, moving=True, running=running)
+        else:
+            locomotion.face_dir(self.pet, dx, dz, dt)
+            locomotion.apply_anim(self.pet, moving=False)
+        self.pet.update(dt, self.registry)
+
+    def _draw_civilian_talk(self) -> None:
+        lines = self._civilian_lines()
+        is_last = self._civilian_talk == len(lines) - 1
+        if is_last and self._pet_stage == 2:
+            action = (f"Press  E / X  to accept  +${self.PET_REWARD:,}", True)
+        elif is_last:
+            action = ("Press  E / X  to accept", True)
+        else:
+            action = ("Press  E / X  to continue", False)
+        self._draw_speech_box("WALTER", "worried pet owner", lines[self._civilian_talk],
+                              pr.Color(210, 200, 130, 255), action)
+
+    # -- Río's stolen-guitar quest (find the guitar, return it for a reward) ---
+    GUITAR_REWARD = 2500
+    BUSKER_PARK_ID = "willow_park"
+    GUITAR_PARK_ID = "cedar_grove"
+    BUSKER_OFFER_LINES = [
+        "Hey… you got a kind face. Some lowlife grabbed my guitar while I was playing.",
+        "That guitar's how I eat. I saw him bolt toward Cedar Grove and ditch it in the bushes.",
+        "I can't leave my pitch or I'll lose it. Could you go grab it for me?",
+        "Bring it back and the $2,500 in my tip jar is yours. Please — it's all I've got.",
+    ]
+    BUSKER_THANKS_LINES = [
+        "No way — you actually got it back! Let me see her… not a scratch!",
+        "You don't know what this means. Here, the whole jar — $2,500, every cent. You earned it.",
+    ]
+
+    def _busker_park(self):
+        parks = self.park.parks
+        return (next((g for g in parks if g.id == self.BUSKER_PARK_ID), None)
+                or (parks[0] if parks else None))
+
+    def _guitar_park(self):
+        parks = self.park.parks
+        return (next((g for g in parks if g.id == self.GUITAR_PARK_ID), None)
+                or (parks[-1] if parks else None))
+
+    def _busker_lines(self):
+        return self.BUSKER_THANKS_LINES if self._guitar_stage == 2 else self.BUSKER_OFFER_LINES
+
+    def _talk_to_busker(self) -> None:
+        if self._guitar_done or self._guitar_stage not in (0, 2):
+            return
+        self._busker_talk = 0
+        self._e_cooldown = 8
+        voice.speak(self._busker_lines()[0], self._busker_voice)
+        while pr.get_char_pressed() > 0:
+            pass
+
+    def _update_busker_talk(self) -> None:
+        advance = (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_ENTER)
+                   or pr.is_key_pressed(pr.KEY_SPACE) or gamepad.pressed(gamepad.CROSS)
+                   or gamepad.pressed(gamepad.TRIANGLE))
+        if not advance:
+            return
+        lines = self._busker_lines()
+        self._busker_talk += 1
+        if self._busker_talk >= len(lines):
+            self._finish_busker()
+        else:
+            voice.speak(lines[self._busker_talk], self._busker_voice)
+
+    def _finish_busker(self) -> None:
+        self._busker_talk = None
+        self._e_cooldown = 8
+        if self._guitar_stage == 0:               # accepted → go search Cedar Grove
+            self._guitar_stage = 1
+            where = (self._guitar_park().name if self._guitar_park() else "the park")
+            self._toast(f"Find the guitar near {where}.")
+            self.inbox.post("Río", f"Thanks for helping. The guitar's stashed near {where} "
+                            f"— bring it back and ${self.GUITAR_REWARD:,} is yours.",
+                            kind="system", subject="Stolen guitar", ts=pr.get_time())
+        elif self._guitar_stage == 2:             # returned → reward
+            self._guitar_stage = 3
+            self._guitar_done = True
+            self.cash += self.GUITAR_REWARD
+            self.link.set_flag("guitar_quest", True)
+            self._persist_state(force=True)
+            self.inbox.post("Río", f"You brought my guitar home. ${self.GUITAR_REWARD:,}, as "
+                            "promised — and a song dedicated to you tonight. Thank you.",
+                            kind="system",
+                            subject=f"✓ Guitar recovered · +${self.GUITAR_REWARD:,}",
+                            ts=pr.get_time())
+
+    def _find_guitar(self) -> None:
+        """Pick up the stashed guitar; now carry it back to Río."""
+        if self._guitar_stage != 1:
+            return
+        self._guitar_stage = 2
+        self._e_cooldown = 8
+        self._toast("You found the guitar! Take it back to Río.")
+
+    def _draw_guitar_prop(self) -> None:
+        """A simple guitar lying in the park: a body + neck from primitives."""
+        gx, gz = self._guitar_pos
+        body = pr.Color(150, 95, 45, 255)        # warm wood
+        pr.draw_cube(pr.Vector3(gx, 0.35, gz), 0.55, 0.7, 0.18, body)
+        pr.draw_cube(pr.Vector3(gx, 0.35, gz + 0.55), 0.12, 0.12, 0.95,
+                     pr.Color(80, 55, 30, 255))  # neck
+        pr.draw_cube_wires(pr.Vector3(gx, 0.35, gz), 0.55, 0.7, 0.18, pr.Color(40, 28, 14, 255))
+
+    def _draw_busker_talk(self) -> None:
+        lines = self._busker_lines()
+        is_last = self._busker_talk == len(lines) - 1
+        if is_last and self._guitar_stage == 2:
+            action = (f"Press  E / X  to accept  +${self.GUITAR_REWARD:,}", True)
+        elif is_last:
+            action = ("Press  E / X  to accept", True)
+        else:
+            action = ("Press  E / X  to continue", False)
+        self._draw_speech_box("RÍO", "street musician", lines[self._busker_talk],
+                              pr.Color(130, 190, 215, 255), action)
+
+    # -- transient park toast (brief on-screen note) --------------------------
+    def _toast(self, msg: str) -> None:
+        self._park_toast = msg
+        self._park_toast_until = pr.get_time() + 3.5
+
+    def _draw_park_toast(self) -> None:
+        if not self._park_toast or pr.get_time() > self._park_toast_until:
+            return
+        tw = pr.measure_text(self._park_toast, 20)
+        x = (config.WINDOW_WIDTH - tw) // 2
+        y = config.WINDOW_HEIGHT - 150
+        pr.draw_rectangle(x - 14, y - 8, tw + 28, 36, pr.Color(0, 0, 0, 175))
+        pr.draw_text(self._park_toast, x, y, 20, pr.Color(255, 220, 150, 255))
+
+    # -- Good-Deeds side-quests <-> To-Do board -------------------------------
+    # Persistent flag -> To-Do task key, so finished deeds show ✓ in the Nokia.
+    _DEED_FLAGS = (("bob_gift", "q_bob"), ("starter_office", "q_starter"),
+                   ("pet_quest", "q_pet"), ("guitar_quest", "q_guitar"))
+
+    def _sync_deeds(self) -> None:
+        """Reflect the persistent Good-Deed flags onto the To-Do board (display only;
+        the flags remain the source of truth)."""
+        for flag, key in self._DEED_FLAGS:
+            if self.link.load_flag(flag):
+                self.taskboard.complete(key)
+
+    def _mark_deed(self, key: str) -> None:
+        """Tick a Good-Deed off the To-Do board the moment it's completed."""
+        if self.taskboard.complete(key):
+            self.link.save_tasks(self.taskboard.done)
+
+    # -- to-do guide (pick a to-do on the Nokia → the city points the way) ----
+    # Roles you hire (no quest-stop of their own) all point to the staffing agency.
+    _GUIDE_HIRE_TASKS = {"engineer", "designer", "researcher", "marketer", "analyst"}
+
+    def _guide_target_for(self, key):
+        """Where in the city this to-do gets done, as (x, z, label) — or None if it
+        has no place to walk to (it's done from your desk/phone, or already finished).
+        Resolved live so the marker moves with the world (e.g. a lot you lease)."""
+        if key is None or self.taskboard.is_done(key):
+            return None
+        # 1) A quest-stop / workshop building that completes this exact to-do.
+        for n in self.park.npc:
+            if key in n.task_keys():
+                return (n.x, n.z, n.name)
+        # 2) Hiring a role → the staffing agency (also reachable from the phone).
+        if key in self._GUIDE_HIRE_TASKS:
+            for n in self.park.npc:
+                if n.store == "hire":
+                    return (n.x, n.z, n.name)
+        # 3) Your first office → the nearest open lease lot.
+        if key == "office":
+            lots = [b for b in self.park.buildings
+                    if b.status == "available" and not getattr(b, "locked", False)]
+            if lots:
+                ceo = self.player.ch
+                b = min(lots, key=lambda b: math.hypot(b.x - ceo.x, b.z - ceo.z))
+                return (b.x, b.z, f"{b.name} (lease)")
+        # 4) Your first intern → waiting out in a park.
+        if key == "intern" and self._intern_park is not None:
+            return (self.intern.x, self.intern.z, self.intern.name)
+        # 5) Good-Deeds side-quests → the current step's spot (stage-aware).
+        if key == "q_bob" and not self._bob_done:
+            return (self.bob.x, self.bob.z, self.bob.name)
+        if key == "q_starter" and not self._starter_unlocked:
+            return (self.lady.x, self.lady.z, self.lady.name)
+        if key == "q_pet" and not self._pet_done:
+            if self._pet_stage == 1:                  # go fetch Biscuit
+                return (self.pet.x, self.pet.z, self.PET_NAME)
+            return (self.civilian.x, self.civilian.z, self.civilian.name)  # talk to Walter
+        if key == "q_guitar" and not self._guitar_done:
+            if self._guitar_stage == 1:              # go grab the guitar
+                return (self._guitar_pos[0], self._guitar_pos[1], "the stolen guitar")
+            return (self.busker.x, self.busker.z, self.busker.name)        # talk to Río
+        return None
+
+    def _start_guide(self, key):
+        """Phone → 'Guide me' on a to-do. Returns (ok, lcd_message). On success the
+        park shows a gold beacon + arrow to the spot; the phone closes so you can walk."""
+        task = tasks.TASK_BY_KEY.get(key)
+        if task is not None and self.taskboard.is_done(key):
+            return (False, "Already done ✓")
+        tgt = self._guide_target_for(key)
+        if tgt is None:
+            return (False, "No place to walk to — do this from your office or phone.")
+        self._guide_key = key
+        title = task.title if task else "your to-do"
+        self._toast(f"Guiding you to {tgt[2]} — {title}. Follow the gold marker.")
+        return (True, "")
+
+    def _clear_guide(self) -> None:
+        self._guide_key = None
+
+    def _draw_guide_hud(self, guide) -> None:
+        """On-screen help once a to-do guide is on: a top chip with the target +
+        distance, and (when the spot is off-screen) an arrow at the screen edge
+        pointing the way. Mirrors the gold world beacon."""
+        gx, gz, label = guide
+        ceo = self.player.ch
+        dist = math.hypot(gx - ceo.x, gz - ceo.z)
+        gold = pr.Color(255, 214, 130, 255)
+        chip = f"▸ Go to: {label}    {dist:0.0f}m    ·    G to cancel"
+        w = pr.measure_text(chip, 18)
+        cx = config.WINDOW_WIDTH // 2
+        pr.draw_rectangle(cx - w // 2 - 12, 92, w + 24, 28, pr.Color(72, 54, 14, 220))
+        pr.draw_text(chip, cx - w // 2, 96, 18, gold)
+        # Off-screen arrow: project the target, fall back to a screen-edge pointer.
+        cam = self.camera.camera
+        sp = pr.get_world_to_screen(pr.Vector3(gx, 2.0, gz), cam)
+        fx, fz = cam.target.x - cam.position.x, cam.target.z - cam.position.z
+        behind = (gx - cam.position.x) * fx + (gz - cam.position.z) * fz <= 0
+        W, H = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+        on = (not behind and 0 <= sp.x <= W and 56 <= sp.y <= H)
+        scx, scy = W / 2, H / 2
+        dx, dy = sp.x - scx, sp.y - scy
+        if behind:
+            dx, dy = -dx, -dy
+        if on or (dx == 0 and dy == 0):
+            return                                 # target is comfortably in view
+        ang = math.atan2(dy, dx)
+        mx, my = W / 2 - 70, H / 2 - 70            # clamp onto a centred box
+        span = min(mx / abs(math.cos(ang)) if math.cos(ang) else 1e9,
+                   my / abs(math.sin(ang)) if math.sin(ang) else 1e9)
+        ax, ay = scx + math.cos(ang) * span, scy + math.sin(ang) * span
+        tip = pr.Vector2(ax + math.cos(ang) * 18, ay + math.sin(ang) * 18)
+        lft = pr.Vector2(ax + math.cos(ang + 2.5) * 16, ay + math.sin(ang + 2.5) * 16)
+        rgt = pr.Vector2(ax + math.cos(ang - 2.5) * 16, ay + math.sin(ang - 2.5) * 16)
+        pr.draw_circle(int(ax), int(ay), 17, pr.Color(72, 54, 14, 220))   # backing so it always reads
+        pr.draw_triangle(tip, lft, rgt, gold)         # raylib culls one winding...
+        pr.draw_triangle(tip, rgt, lft, gold)         # ...so draw both; only the front face shows
 
     # -- shop -----------------------------------------------------------------
     def buy_item(self, item: dict) -> None:
@@ -1305,12 +1803,13 @@ class Game:
             # Your own buildings all share one bright "yours" gold (matches the map
             # legend) so they read as a group; lease lots are orange.
             if b.status == "hq":
-                col, kind = (255, 222, 120), "hq"
+                col, kind, label = (255, 222, 120), "hq", b.name
             elif leased:
-                col, kind = (255, 222, 120), "office"
+                col, kind, label = (255, 222, 120), "office", b.name
+            elif getattr(b, "locked", False):    # gated lot (e.g. Starter Office)
+                col, kind, label = (150, 155, 165), "locked", f"{b.name} (locked)"
             else:
-                col, kind = (235, 150, 70), "lease"
-            label = b.name if leased else f"{b.name} — lease ${b.deposit:,}"
+                col, kind, label = (235, 150, 70), "lease", f"{b.name} — lease ${b.deposit:,}"
             out.append({"x": b.x, "z": b.z, "color": col, "label": label, "kind": kind})
         for n in self.park.npc:
             if n.market:
@@ -1337,6 +1836,23 @@ class Game:
         elif self._bob_rescue_pending and not self._bob_rescue_done:
             out.append({"x": self.bob.x, "z": self.bob.z, "color": (225, 170, 120),
                         "label": "Bob (meet up)", "kind": "friend"})
+        if not self._starter_unlocked:
+            out.append({"x": self.lady.x, "z": self.lady.z, "color": (220, 150, 195),
+                        "label": "Mae (Starter Office)", "kind": "friend"})
+        if not self._pet_done:
+            if self._pet_stage in (0, 2):        # Walter wants to talk (offer / collect)
+                out.append({"x": self.civilian.x, "z": self.civilian.z, "color": (220, 210, 130),
+                            "label": "Walter (lost pet)", "kind": "friend"})
+            if self._pet_stage == 1:             # Biscuit is out there to be found
+                out.append({"x": self.pet.x, "z": self.pet.z, "color": (220, 180, 140),
+                            "label": f"{self.PET_NAME} (lost dog)", "kind": "friend"})
+        if not self._guitar_done:
+            if self._guitar_stage in (0, 2):     # Río wants to talk (offer / collect)
+                out.append({"x": self.busker.x, "z": self.busker.z, "color": (130, 190, 215),
+                            "label": "Río (stolen guitar)", "kind": "friend"})
+            if self._guitar_stage == 1:          # the guitar is out there to be found
+                out.append({"x": self._guitar_pos[0], "z": self._guitar_pos[1],
+                            "color": (180, 120, 60), "label": "Stolen guitar", "kind": "friend"})
         return out
 
     # -- save game (cash + leases) --------------------------------------------
@@ -1407,6 +1923,31 @@ class Game:
             spot = self._bob_rescue_spot()       # he's waiting at the park to bail you out
             if spot is not None:
                 self.bob.x, self.bob.z, self.bob.y = spot.x + 2.0, spot.z + 1.0, 0.0
+        # Mae waits in her park until you've unlocked the Starter Office.
+        if not self._starter_unlocked:
+            lp = self._lady_park()
+            if lp is not None:
+                self.lady.x, self.lady.z, self.lady.y = lp.x - 2.0, lp.z + 1.0, 0.0
+                self.lady.yaw = 180.0
+        # Walter waits in his park; Biscuit waits in his until found (then he follows).
+        if not self._pet_done:
+            cp = self._civilian_park()
+            if cp is not None:
+                self.civilian.x, self.civilian.z, self.civilian.y = cp.x - 2.0, cp.z + 1.0, 0.0
+                self.civilian.yaw = 180.0
+            if self._pet_stage < 2:
+                pp = self._pet_park()
+                if pp is not None:
+                    self.pet.x, self.pet.z, self.pet.y = pp.x + 1.5, pp.z - 1.0, 0.0
+        # Río waits in her park; the stolen guitar is stashed at another park.
+        if not self._guitar_done:
+            bp = self._busker_park()
+            if bp is not None:
+                self.busker.x, self.busker.z, self.busker.y = bp.x + 2.0, bp.z + 1.0, 0.0
+                self.busker.yaw = 180.0
+            gp = self._guitar_park()
+            if gp is not None:
+                self._guitar_pos = (gp.x - 1.5, gp.z + 1.5)
 
     def _enter_office(self, building=None) -> None:
         # Always arrive in the building's lobby (then ride up to the wings). A new
@@ -1510,6 +2051,7 @@ class Game:
 
     _STORE_ACTOR = {"outfit": "Tailor", "hire": "Recruiter"}
     _SERVICE_ACTOR = {"grant": "Grants Officer"}
+    _GAME_ACTOR = {"slots": "Pit Boss", "farm": "Trade Attaché"}
 
     def _spawn_quest_actor(self, npc) -> None:
         """Place one NPC inside the building to talk to — Robin for the cafe, a
@@ -1519,6 +2061,7 @@ class Game:
         lines = dialogue.lines_for(self.dialogue, key)
         name = ((self._STORE_ACTOR.get(npc.store) if npc.is_store else None)
                 or (self._SERVICE_ACTOR.get(npc.service) if npc.is_service else None)
+                or (self._GAME_ACTOR.get(npc.game) if npc.is_game else None)
                 or (lines[0].who if lines else "")) or npc.name
         cx, cz = self.plan.grid_to_world(self.plan.cols / 2.0 - 0.5, 2.0)
         if npc.task == "cofounder":            # the cafe: it's Robin in person
@@ -1577,6 +2120,9 @@ class Game:
             return
         if self.slot_panel.open:                 # the casino: the slot machine
             self._do_slot_action(self.slot_panel.draw(self.cash))
+            return
+        if self.farm_panel.open:                 # the Trade Embassy: the idle farm
+            self._do_farm_action(self.farm_panel.draw(self.farm, self.cash))
             return
         if self.grant_panel.open:                # Grants Office: LLM-judged funding
             self._drive_grant_panel()
@@ -1637,12 +2183,13 @@ class Game:
             self.grant_panel.open_panel()
             self._e_cooldown = 8
             return
-        if getattr(npc, "game", None) == "slots":  # the casino: one-time tips, then the slots
+        g = getattr(npc, "game", None)             # arcade/idle venue (casino slots, embassy farm)
+        if g in ("slots", "farm"):
             pending = npc.pending(self.taskboard.done)
-            if pending:                            # first visit: the pit boss's risk talk
+            if pending:                            # do any one-time intro quest first
                 self._open_quest_task(npc, pending[0])
                 return
-            self.slot_panel.open_panel()
+            (self.slot_panel if g == "slots" else self.farm_panel).open_panel()
             self._e_cooldown = 8
             return
         pending = npc.pending(self.taskboard.done)
@@ -1653,7 +2200,7 @@ class Game:
             # Angel Investor, the civic clerks, the city guide, etc.
             key = npc.task
             if key and key in self.dialogue:
-                self._open_lore(npc, key)
+                self._open_lore(npc, key, replay=True)
                 return
             self.inbox.post(npc.name, "Already taken care of — nothing else to do here.",
                             kind="system", subject=npc.name, ts=pr.get_time())
@@ -1676,13 +2223,15 @@ class Game:
         else:
             self._complete_quest_stop(npc, key)
 
-    def _open_lore(self, npc, key: str) -> None:
+    def _open_lore(self, npc, key: str, replay: bool = False) -> None:
         """Open the dialogue modal in play-then-finish mode (no input field): step
         the beat's lines, then _complete_quest_stop on the last one. The complete()
         is a no-op reward-wise once the to-do is done, so this doubles as the on-
-        screen replay when you revisit a finished stop (Angel Investor, clerks…)."""
+        screen replay when you revisit a finished stop (Angel Investor, clerks…).
+        `replay` picks the beat's `done` lines (a fresh line for a finished stop)."""
         self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
         self._quest_line, self._quest_action = 0, "complete"
+        self._quest_replay = replay
         self._e_cooldown = 4
         while pr.get_char_pressed() > 0:
             pass
@@ -1720,6 +2269,7 @@ class Game:
     def _close_quest_input(self) -> None:
         self._quest_input, self._quest_task, self._quest_buf = None, None, ""
         self._quest_line, self._quest_action = 0, None
+        self._quest_replay = False
 
     def _draw_quest_input(self) -> None:
         """Modal conversation for a quest stop: step through the beat's dialogue
@@ -1729,7 +2279,7 @@ class Game:
         npc = self._quest_input
         key = self._quest_task
         task = tasks.TASK_BY_KEY.get(key)          # None for a store-greeting beat
-        lines = dialogue.lines_for(self.dialogue, key)
+        lines = dialogue.lines_for(self.dialogue, key, done=self._quest_replay)
         n = len(lines)
         # _quest_line is 0..n: 0..n-1 are the spoken lines; n is the answer step.
         self._quest_line = max(0, min(self._quest_line, n))
@@ -1852,11 +2402,26 @@ class Game:
         # an investor meeting is open.
         frozen = (self._quest_input is not None
                   or self.dossier.open or self.investor.open or self.phone.open
-                  or self.shop.open or self._bob_talk is not None)
+                  or self.shop.open or self._bob_talk is not None
+                  or self._lady_talk is not None or self._civilian_talk is not None
+                  or self._busker_talk is not None)
+        # Live to-do guide: re-resolve the chosen to-do's spot each frame so the gold
+        # beacon tracks the world; clear it (with a cheer) the moment it's completed.
+        guide = self._guide_target_for(self._guide_key) if self._guide_key else None
+        if self._guide_key and guide is None:
+            if self.taskboard.is_done(self._guide_key):
+                self._toast("To-do complete ✓  Nice work.")
+            self._guide_key = None
         if self.phone.open:                    # the Nokia works out in the city too
             self.phone.update()
         if self._bob_talk is not None:         # mid-greeting: the speech box owns input
             self._update_bob_talk()
+        if self._lady_talk is not None:        # mid-conversation with Mae
+            self._update_lady_talk()
+        if self._civilian_talk is not None:    # mid-conversation with Walter
+            self._update_civilian_talk()
+        if self._busker_talk is not None:      # mid-conversation with Río
+            self._update_busker_talk()
         # Your first intern waits in a park until taken on (the "intern" quest).
         show_intern = (self._intern_park is not None
                        and not self.taskboard.is_done("intern"))
@@ -1876,6 +2441,30 @@ class Game:
         if show_bob:                             # keep Bob turned toward you, idling
             self.bob.yaw = math.degrees(math.atan2(ceo.x - self.bob.x, ceo.z - self.bob.z))
             self.bob.update(dt, self.registry)
+        show_lady = not self._starter_unlocked   # Mae, until the Starter Office is unlocked
+        if show_lady:
+            self.lady.yaw = math.degrees(math.atan2(ceo.x - self.lady.x, ceo.z - self.lady.z))
+            self.lady.update(dt, self.registry)
+        # Walter (until his pet is home) and Biscuit (once the search is on).
+        show_civilian = not self._pet_done
+        show_pet = (not self._pet_done) and self._pet_stage in (1, 2)
+        if show_civilian:
+            self.civilian.yaw = math.degrees(math.atan2(ceo.x - self.civilian.x,
+                                                        ceo.z - self.civilian.z))
+            self.civilian.update(dt, self.registry)
+        if show_pet:
+            if self._pet_stage == 2 and not frozen:
+                self._update_pet_follow(dt)      # Biscuit trots home behind you
+            else:
+                self.pet.yaw = math.degrees(math.atan2(ceo.x - self.pet.x, ceo.z - self.pet.z))
+                self.pet.update(dt, self.registry)
+        # Río (until her guitar is back) and the stashed guitar (a drawn prop).
+        show_busker = not self._guitar_done
+        show_guitar = (not self._guitar_done) and self._guitar_stage == 1
+        if show_busker:
+            self.busker.yaw = math.degrees(math.atan2(ceo.x - self.busker.x,
+                                                      ceo.z - self.busker.z))
+            self.busker.update(dt, self.registry)
         self.pedestrians.update(dt, ceo.x, ceo.z, self.registry)  # ambient crowd
         near = self.park.nearest(ceo.x, ceo.z)
         # Quest-stop NPC buildings (Chamber of Commerce, …) are only offered when no
@@ -1886,15 +2475,36 @@ class Game:
                        <= parkmod.REACH)
         bob_near = (show_bob and near is None and near_npc is None
                     and math.hypot(self.bob.x - ceo.x, self.bob.z - ceo.z) <= parkmod.REACH)
+        lady_near = (show_lady and near is None and near_npc is None
+                     and math.hypot(self.lady.x - ceo.x, self.lady.z - ceo.z) <= parkmod.REACH)
+        # Walter offers/collects at stages 0 and 2; Biscuit is grabbable at stage 1.
+        civilian_near = (show_civilian and near is None and near_npc is None
+                         and self._pet_stage in (0, 2)
+                         and math.hypot(self.civilian.x - ceo.x, self.civilian.z - ceo.z) <= parkmod.REACH)
+        pet_near = (show_pet and self._pet_stage == 1 and near is None and near_npc is None
+                    and math.hypot(self.pet.x - ceo.x, self.pet.z - ceo.z) <= parkmod.REACH)
+        # Río offers/collects at stages 0 and 2; the guitar is grabbable at stage 1.
+        busker_near = (show_busker and near is None and near_npc is None
+                       and self._guitar_stage in (0, 2)
+                       and math.hypot(self.busker.x - ceo.x, self.busker.z - ceo.z) <= parkmod.REACH)
+        guitar_near = (show_guitar and near is None and near_npc is None
+                       and math.hypot(self._guitar_pos[0] - ceo.x, self._guitar_pos[1] - ceo.z) <= parkmod.REACH)
 
         if not frozen:
             if pr.is_key_pressed(pr.KEY_P):
                 self._enter_office(); return
+            if guide is not None and pr.is_key_pressed(pr.KEY_G):   # call off the guide
+                self._clear_guide()
+                self._toast("Guide off.")
+                guide = None
             press_e = self._e_cooldown == 0 \
                 and (pr.is_key_pressed(pr.KEY_E) or gamepad.pressed(gamepad.TRIANGLE))
             if near is not None and press_e:
                 if near.leased:
                     self._enter_office(near); return
+                elif getattr(near, "locked", False):    # gated lot — meet the NPC first
+                    self._toast(f"{near.name} is locked — find Mae in a park to open it.")
+                    self._e_cooldown = 8
                 elif self.cash >= near.deposit:
                     self.cash -= near.deposit
                     self.park.lease(near)        # capacity rises via max_desks
@@ -1913,10 +2523,30 @@ class Game:
                 self._take_on_intern()
             elif bob_near and press_e:           # childhood friend → welcome gift or rescue
                 self._talk_to_bob("welcome" if not self._bob_done else "rescue")
+            elif lady_near and press_e:          # Mae → unlock the affordable Starter Office
+                self._talk_to_lady()
+            elif civilian_near and press_e:      # Walter → offer / collect the lost-pet quest
+                self._talk_to_civilian()
+            elif pet_near and press_e:           # found Biscuit → he follows you home
+                self._find_pet()
+            elif busker_near and press_e:        # Río → offer / collect the stolen-guitar quest
+                self._talk_to_busker()
+            elif guitar_near and press_e:        # found the guitar → carry it back
+                self._find_guitar()
 
         pr.begin_drawing()
         pr.clear_background(self.daylight.sky_color())
         self.park.draw(self.camera.camera, self.season.name, self.taskboard.done)
+        # Sit every park character on the gentle terrain — Y only; their X/Z movement,
+        # collision and the traffic sim are unchanged, so navigation stays intact.
+        gy = self.park.ground_y
+        ceo.y = gy(ceo.x, ceo.z)
+        for _ch in (getattr(self, _n, None) for _n in
+                    ("intern", "bob", "lady", "civilian", "pet", "busker", "robin")):
+            if _ch is not None:
+                _ch.y = gy(_ch.x, _ch.z)
+        for _ped in self.pedestrians.peds:
+            _ped.ch.y = gy(_ped.ch.x, _ped.ch.z)
         pr.begin_mode_3d(self.camera.camera)
         self.pedestrians.draw(self.registry)
         if show_intern:
@@ -1927,14 +2557,45 @@ class Game:
         if show_bob:
             self.bob.draw(self.registry)
             self.park.draw_quest_indicator(self.bob.x, self.bob.z, self.bob.height + 1.4)
+        if show_lady:
+            self.lady.draw(self.registry)
+            self.park.draw_quest_indicator(self.lady.x, self.lady.z, self.lady.height + 1.4)
+        if show_civilian:
+            self.civilian.draw(self.registry)
+            if self._pet_stage in (0, 2):        # "!" when he wants to talk (offer / collect)
+                self.park.draw_quest_indicator(self.civilian.x, self.civilian.z,
+                                               self.civilian.height + 1.4)
+        if show_pet:
+            self.pet.draw(self.registry)
+            if self._pet_stage == 1:             # "!" over Biscuit while he's lost
+                self.park.draw_quest_indicator(self.pet.x, self.pet.z, self.pet.height + 1.0)
+        if show_busker:
+            self.busker.draw(self.registry)
+            if self._guitar_stage in (0, 2):     # "!" when Río wants to talk
+                self.park.draw_quest_indicator(self.busker.x, self.busker.z,
+                                               self.busker.height + 1.4)
+        if show_guitar:                          # the stashed guitar (a simple prop)
+            self._draw_guitar_prop()
+            self.park.draw_quest_indicator(self._guitar_pos[0], self._guitar_pos[1], 1.4)
         if self.robin_following:
             self.robin.draw(self.registry)
+        if guide is not None:                    # the gold "go here" beacon for your picked to-do
+            self.park.draw_guide_beacon(guide[0], guide[1])
         ceo.draw(self.registry)
         pr.end_mode_3d()
         self._draw_park_overlay(near, near_npc)
+        if guide is not None:                    # top chip + screen-edge arrow to the spot
+            self._draw_guide_hud(guide)
         self._draw_companion_chip()
         if self._bob_talk is not None:           # childhood friend's greeting, on top
             self._draw_bob_talk()
+        if self._lady_talk is not None:          # Mae's conversation, on top
+            self._draw_lady_talk()
+        if self._civilian_talk is not None:      # Walter's conversation, on top
+            self._draw_civilian_talk()
+        if self._busker_talk is not None:        # Río's conversation, on top
+            self._draw_busker_talk()
+        self._draw_park_toast()
         if self._quest_input is not None:        # quest-stop decision capture, on top
             self._draw_quest_input()
         self._do_dossier_action(self.dossier.draw(self.company))
@@ -2112,6 +2773,33 @@ class Game:
                      "C company  -  N phone",
                      18, config.WINDOW_HEIGHT - 28, 18, pr.LIGHTGRAY)
 
+    def _sync_city_geo(self) -> None:
+        """Push live positions of the CEO, every agent, and the city's shops into a
+        Redis geospatial index once a second. Lets the backend ask spatial questions
+        (nearest idle engineer, who's by the cafe) without the game scanning entities
+        each frame. Best-effort + gated on REDIS_URL — never disturbs the game loop."""
+        now = pr.get_time()
+        if now - getattr(self, "_geo_last", 0.0) < 1.0:
+            return
+        self._geo_last = now
+        try:
+            from backend import city_geo
+            if not city_geo.is_configured():
+                return
+            ceo = self.player.ch
+            ents = [{"id": "ceo", "x": ceo.x, "z": ceo.z, "kind": "agent",
+                     "name": ceo.name or "You (CEO)", "role": "CEO"}]
+            for a in self.all_agents:
+                ents.append({"id": a.backend_id or f"agent:{a.name}",
+                             "x": a.x, "z": a.z, "kind": "agent",
+                             "name": a.name, "role": a.role})
+            for b in self.park.npc:
+                ents.append({"id": b.id, "x": b.x, "z": b.z,
+                             "kind": "building", "name": b.name})
+            city_geo.sync(ents)
+        except Exception:
+            pass
+
     def run(self) -> None:
         pr.set_config_flags(pr.FLAG_MSAA_4X_HINT)
         pr.init_window(config.WINDOW_WIDTH, config.WINDOW_HEIGHT, config.WINDOW_TITLE)
@@ -2179,10 +2867,12 @@ class Game:
             # Rent accrues no matter where the CEO is standing.
             rent = self.park.tick_rent(dt)
             self.cash -= rent
-            # The idle market ticks everywhere too — money makes money while you roam.
+            # The idle market + farm tick everywhere too — money grows while you roam.
             self.market.update(dt)
-            if rent:                    # once per in-game month: checkpoint the market
+            self.farm.update(dt)
+            if rent:                    # once per in-game month: checkpoint both
                 self.market.save(self.link)   # (stamps last_seen for offline catch-up)
+                self.farm.save(self.link)
 
             # Checkpoint cash + leased offices (throttled inside) so the balance and
             # your buildings survive a restart, not just the market/roster.
@@ -2211,6 +2901,11 @@ class Game:
                                    [n.name for n in self.park.npc],
                                    self.inbox, pr.get_time())
 
+            # Keep the Redis geo map of the living city fresh (CEO, agents, shops) so
+            # the backend can answer "who/what is near here?" at Redis speed. Throttled
+            # and fully gated — a Redis hiccup never reaches the render loop.
+            self._sync_city_geo()
+
             if self._e_cooldown > 0:        # swallow an E press that lingers across
                 self._e_cooldown -= 1       # a mode/room switch (no EndDrawing between)
 
@@ -2219,7 +2914,8 @@ class Game:
             # C toggles the Company Dossier (view/edit the decisions agents read).
             if pr.is_key_pressed(pr.KEY_C) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
-                    and not self.grant_panel.open and not self.slot_panel.open:
+                    and not self.grant_panel.open and not self.slot_panel.open \
+                    and not self.farm_panel.open:
                 self.dossier.toggle()
             # N toggles the Nokia phone from anywhere (office OR city) — press again to
             # close. Skipped while a text field owns the keyboard (incl. the phone's own
@@ -2227,6 +2923,7 @@ class Game:
             if pr.is_key_pressed(pr.KEY_N) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
                     and not self.grant_panel.open and not self.slot_panel.open \
+                    and not self.farm_panel.open \
                     and not self.phone.capturing and self._quest_input is None:
                 if self.phone.open:
                     self.phone.close()
@@ -2251,7 +2948,8 @@ class Game:
             elif self.elevator_open or self.shop.open:
                 pass  # the modal handles its own input inside draw()
             elif (self.dossier.open or self.investor.open or self.market_panel.open
-                  or self.grant_panel.open or self.slot_panel.open):
+                  or self.grant_panel.open or self.slot_panel.open
+                  or self.farm_panel.open):
                 pass  # a full-screen panel is up; it's modal — freeze movement/keys
             elif self._quest_input is not None:
                 pass  # talking to a quest NPC; the dialogue modal owns the keyboard
@@ -2389,6 +3087,7 @@ class Game:
             pr.end_drawing()
 
         self.market.save(self.link)        # checkpoint the portfolio + last_seen on quit
+        self.farm.save(self.link)          # checkpoint the farm + last_seen on quit
         self._persist_state(force=True)    # flush cash + leases on quit
         self.chat.voice.shutdown()
         self.meeting_link.shutdown()

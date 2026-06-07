@@ -66,9 +66,20 @@ def _short(text: str, n: int = 40) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def _fit(text: str, size: int, max_w: int) -> str:
+    """Trim `text` to `max_w` pixels at font `size`, ending in an ellipsis when cut
+    (so long names read 'People Analytics…' instead of an abrupt 'People Analytics L')."""
+    text = " ".join((text or "").split())
+    if pr.measure_text(text, size) <= max_w:
+        return text
+    while text and pr.measure_text(text + "…", size) > max_w:
+        text = text[:-1]
+    return (text + "…") if text else ""
+
+
 class PhonePanel:
     def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None,
-                 hire=None, follow=None, citymap=None, clock=None) -> None:
+                 hire=None, follow=None, citymap=None, clock=None, guide=None) -> None:
         self.link = link                  # CompanyLink (agent 1:1 chat)
         self.coord = coordinator          # CoordinatorLink (co-founder)
         self._contacts = contacts_getter  # () -> list[Character]
@@ -78,6 +89,8 @@ class PhonePanel:
         self.follow = follow              # co-founder follow bridge (is_following/set_following), optional
         self.citymap = citymap            # city-map bridge (here/bounds/markers), optional
         self.clock = clock                # clock bridge (state() -> date+time dict), optional
+        self.guide = guide                # to-do guide bridge (start(key) -> (ok, msg)), optional
+        self._todo_flash = ""             # transient note on the To-Do screen (e.g. why no guide)
         self._map_sel = 0                 # selected POI index on the MAP screen
         self._cand = None                 # the auto-generated candidate awaiting a role
         self._hire_flash = ""             # transient "Office full" / "Hired!" message
@@ -354,7 +367,7 @@ class PhonePanel:
         elif self.sel == 3:
             self._enter_hire()
         elif self.sel == 4:
-            self.screen, self.sel, self._list_top = TODO, 0, 0
+            self.screen, self.sel, self._list_top, self._todo_flash = TODO, 0, 0, ""
         elif self.sel == 5:
             self.screen, self._map_sel = MAP, self._default_map_sel()
         elif self.sel == 6:
@@ -585,8 +598,27 @@ class PhonePanel:
     def _update_todo(self) -> None:
         n = len(tasks.TASKS)
         self._nav(n)
+        # Click a row to select it (like the inbox), then Guide/Enter to navigate.
+        start, ys, rh, lx, lw = self._list_view(n)
+        if pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT):
+            m = self._mouse()
+            for i, ry in enumerate(ys):
+                if pr.check_collision_point_rec(m, pr.Rectangle(lx, ry, lw, rh)):
+                    self.sel = start + i
+                    break
         if self._back():
             self.screen, self.sel = HOME, 4
+            self._todo_flash = ""
+            return
+        # "Guide" (Enter / left soft-key): light up the city toward this to-do's spot.
+        if n and self._enter():
+            self.sel = min(self.sel, n - 1)
+            key = tasks.TASKS[self.sel].key
+            ok, msg = self.guide.start(key) if self.guide else (False, "Guide unavailable.")
+            if ok:
+                self.close()                       # step outside and follow the gold marker
+            else:
+                self._todo_flash = msg
 
     # --- Hire app (candidate card → pick a role from the dept grid) --------
 
@@ -1086,6 +1118,14 @@ class PhonePanel:
             while title and pr.measure_text(title, 14) > lw - 42:
                 title = title[:-1]
             pr.draw_text(title, lx + 34, ry, 14, fg)
+        # Bottom banner: either why a guide isn't possible, or the standing hint.
+        foot = self._todo_flash or "Press Guide → walk there"
+        fcol = pr.Color(235, 150, 90, 255) if self._todo_flash else INK_DIM
+        pr.draw_rectangle(lx, ly + lh - 20, lw, 20, LCD_BG)
+        ft = foot
+        while ft and pr.measure_text(ft, 12) > lw - 12:
+            ft = ft[:-1]
+        pr.draw_text(ft, lx + 6, ly + lh - 17, 12, fcol)
 
     def _draw_hire(self, lx, ly, lw, lh) -> None:
         if self.hire is None:
@@ -1096,19 +1136,19 @@ class PhonePanel:
         c = self._cand or {}
         look = c.get("appearance", {}) or {}
         cx = lx + lw // 2
-        # A little monochrome line-art portrait that reflects the random look.
-        self._draw_portrait(cx, ly + 62, look)
-        # Name + the character model they'll wear.
-        name = c.get("name", "—")
-        while name and pr.measure_text(name, 20) > lw - 16:
-            name = name[:-1]
-        nw = pr.measure_text(name, 20)
-        pr.draw_text(name, cx - nw // 2, ly + 122, 20, INK)
+        # A little monochrome line-art portrait that reflects the random look. Its
+        # head-and-shoulders reach ~52px below centre, so the name sits clear below.
+        self._draw_portrait(cx, ly + 54, look)
+        # Name + the character model they'll wear, below the portrait (no overlap).
+        name = _fit(c.get("name", "—"), 18, lw - 16)
+        nw = pr.measure_text(name, 18)
+        pr.draw_text(name, cx - nw // 2, ly + 124, 18, INK)
         model = (c.get("char_name") or "").strip()
         if model:
+            model = _fit(model, 12, lw - 16)
             mw = pr.measure_text(model, 12)
-            pr.draw_text(model, cx - mw // 2, ly + 148, 12, INK_DIM)
-        pr.draw_line(lx + 14, ly + 170, lx + lw - 14, ly + 170, INK_DIM)
+            pr.draw_text(model, cx - mw // 2, ly + 146, 12, INK_DIM)
+        pr.draw_line(lx + 14, ly + 168, lx + lw - 14, ly + 168, INK_DIM)
         # Look summary, read from the palettes by index.
         def _label(palette, idx):
             return palette[idx % len(palette)][0]
@@ -1116,14 +1156,14 @@ class PhonePanel:
         rows = [("Skin", _label(config.SKIN_TONES, look.get("skin_idx", 0))),
                 ("Hair", f"{_label(config.HAIR_COLORS, look.get('hair_idx', 0))} · {style}"),
                 ("Eyes", _label(config.EYE_COLORS, look.get("eye_idx", 0)))]
-        y = ly + 180
+        y = ly + 182
         for tag, val in rows:
             pr.draw_text(tag, lx + 16, y, 13, INK_DIM)
-            pr.draw_text(_short(val, 22), lx + 70, y, 13, INK)
-            y += 20
+            pr.draw_text(_fit(val, 13, lw - 78), lx + 70, y, 13, INK)
+            y += 24
         # Footer: transient flash, then the shuffle hint.
         if self._hire_flash:
-            pr.draw_text(_short(self._hire_flash, 30), lx + 8, ly + lh - 34, 12, INK)
+            pr.draw_text(_fit(self._hire_flash, 12, lw - 12), lx + 8, ly + lh - 34, 12, INK)
         hint = "Space / ◄ ► = shuffle"
         hw = pr.measure_text(hint, 12)
         pr.draw_text(hint, cx - hw // 2, ly + lh - 16, 12, INK_DIM)
@@ -1132,14 +1172,14 @@ class PhonePanel:
         """A simple monochrome avatar that mirrors the random hairstyle/eyes — just
         enough to make each shuffled candidate feel like a distinct person."""
         bald = config.HAIRSTYLES[look.get("hair_style", 0) % len(config.HAIRSTYLES)][1] == "bald"
-        pr.draw_circle(cx, cy + 50, 30, INK_DIM)              # shoulders / torso
+        pr.draw_circle(cx, cy + 38, 22, INK_DIM)             # shoulders / torso (compact)
         if not bald:                                          # hair shows as a top crescent
-            pr.draw_circle(cx, cy - 8, 28, INK)
-        pr.draw_circle(cx, cy, 26, INK_DIM)                  # head over the hair blob
-        for dx in (-10, 10):                                  # eyes
-            pr.draw_circle(cx + dx, cy - 1, 4, LCD_BG)
+            pr.draw_circle(cx, cy - 7, 23, INK)
+        pr.draw_circle(cx, cy, 21, INK_DIM)                  # head over the hair blob
+        for dx in (-8, 8):                                    # eyes
+            pr.draw_circle(cx + dx, cy - 1, 3, LCD_BG)
             pr.draw_circle(cx + dx, cy - 1, 2, INK)
-        pr.draw_line(cx - 7, cy + 12, cx + 7, cy + 12, INK)  # mouth
+        pr.draw_line(cx - 6, cy + 10, cx + 6, cy + 10, INK)  # mouth
 
     def _draw_hire_role(self, lx, ly, lw, lh) -> None:
         c = self._cand or {}
@@ -1167,10 +1207,7 @@ class PhonePanel:
             dim = LCD_BG if selected else INK_DIM
             tag = f"${rate:,}"
             tw = pr.measure_text(tag, 12)
-            title = text
-            while title and pr.measure_text(title, 14) > lw - tw - 30:
-                title = title[:-1]
-            pr.draw_text(title, lx + 16, ry, 14, fg)
+            pr.draw_text(_fit(text, 14, lw - tw - 30), lx + 16, ry, 14, fg)
             pr.draw_text(tag, lx + lw - tw - 8, ry + 1, 12, dim)
 
     def _list_view_h(self, n: int, top: int | None = None, bottom_pad: int = 0):
@@ -1345,7 +1382,7 @@ class PhonePanel:
         elif self.screen == CONTACTS:
             left, right = "Message", "Back"
         elif self.screen == TODO:
-            left, right = "", "Back"
+            left, right = "Guide", "Back"
         elif self.screen == HIRE:
             left, right = "Add", "Back"
         elif self.screen == HIRE_ROLE:

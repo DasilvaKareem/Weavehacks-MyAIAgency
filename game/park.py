@@ -19,6 +19,7 @@ import pyray as pr
 
 from . import config
 from .season import SEASON_SUFFIX, SEASON_TINT
+from .terrain import Terrain
 
 # Backdrop buildings (every converted model) used to fill the skyline around the
 # six playable lots. Drawn full-colour, no interaction.
@@ -59,7 +60,9 @@ DESKS_PER_LEASE = 3    # capacity unlocked per leased office
 # Downtown addresses (avenue, street) for the playable lots + flavor shops. The
 # rest of the 20x20 grid is filled with backdrop buildings.
 LOT_ADDR = {"growth": (9, 10), "hq": (10, 10), "finance": (11, 10),
-            "eng": (9, 11), "research": (10, 11), "design": (11, 11)}
+            "eng": (9, 11), "research": (10, 11), "design": (11, 11),
+            # The affordable starter office (unlocked by meeting Mae in the park).
+            "starter": (12, 10)}
 # Spread the shops across the whole city so you find them while exploring.
 NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "bookshop": (6, 17), "cafe": (13, 5), "convenience": (15, 16),
@@ -78,6 +81,8 @@ NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             # The Angel Investor (Apex's seed desk) — one block north of spawn, on the
             # walk into downtown, clear of the parks so you find it first.
             "angel": (10, 8),
+            # The Trade Embassy — runs the idle South-America farm (passive income).
+            "embassy": (9, 9),
             # Storefronts: The Outfitters by the brand studio; staffing up north.
             "outfitters": (7, 9), "staffing": (11, 7)}
 
@@ -238,6 +243,7 @@ class Building:
     status: str        # 'hq' | 'leased' | 'available'
     plan: str = "hq"   # floor-plan template id (single-room buildings)
     structure: dict | None = None  # optional floors/wings interior (see interior.py)
+    locked: bool = False  # can't be leased until a gate is cleared (e.g. meet an NPC)
 
     @property
     def leased(self) -> bool:
@@ -459,6 +465,7 @@ class Park:
                 deposit=lot["deposit"], rent=lot["rent"], model=lot["model"],
                 color=tuple(lot["color"]), x=x, z=z, status=lot["status"],
                 plan=lot.get("plan", "hq"), structure=lot.get("structure"),
+                locked=lot.get("locked", False),
             ))
         # snap the NPC shops to their grid addresses too
         for n in self.npc:
@@ -485,6 +492,12 @@ class Park:
         self.traffic = Traffic()
         self._props = self._build_props()     # static lights/signs/cones
         self.rent_timer = 0.0
+        # 3D terrain: flat concrete basin holding the whole road grid (so the flat
+        # road/sidewalk quads keep working), ramping up into grass/rock/snow hills
+        # well beyond the playable bounds. Built lazily on first draw (needs GL).
+        self.terrain = Terrain(span=1150.0, flat_radius=225.0, city_radius=162.0,
+                               baseline=GROUND_Y, max_height=60.0, res=190, ramp=140.0,
+                               sea_drop=11.0, city_amp=0.0)   # city dead-flat; keep hills + sea
         # CEO spawns one block south of HQ, facing the downtown blocks (+z).
         self.spawn = block_pos(10, 9)
         ext = (AVENUES - CENTER) * BLOCK + 2.0
@@ -548,6 +561,13 @@ class Park:
     def height_mult(self, x: float, z: float) -> float:
         """Skyline vertical multiplier for a building at world (x, z)."""
         return _skyline(x / BLOCK + CENTER, z / BLOCK + CENTER)
+
+    def ground_y(self, x: float, z: float) -> float:
+        """Terrain height ABOVE the city baseline at (x, z) — add to the Y of anything
+        drawn so it rides the terrain, with its original offset preserved. In the flat
+        city basin this is 0 (a no-op), so objects sit exactly where they always did;
+        out on the hills it lifts them onto the slope. Navigation stays X/Z only."""
+        return self.terrain.height_at(x, z) - self.terrain.baseline
 
     def top_of(self, b) -> float:
         """World-space top of a building (for floating labels)."""
@@ -647,6 +667,7 @@ class Park:
         cx, cz = camera.target.x, camera.target.z       # cull around where we look
         done = quest_done or set()
         pr.begin_mode_3d(camera)
+        self.terrain.draw()                      # 3D land: flat city basin + hills
         self._draw_streets(cx, cz)
         self._draw_parks(cx, cz, season)        # lawns sit under the trees/fountains
         self._draw_cars(cx, cz)
@@ -675,29 +696,30 @@ class Park:
                 continue
             v = VEHICLES[c.vtype]
             ld = self._car_models.get(v.name)
+            gy = self.ground_y(c.x, c.z)        # ride the terrain (X/Z nav unchanged)
             if ld is not None:
                 s = ld.scale
                 tint = _c(v.tint) if v.tint else pr.WHITE
-                pr.draw_model_ex(ld.model, pr.Vector3(c.x, ld.y_off, c.z),
+                pr.draw_model_ex(ld.model, pr.Vector3(c.x, ld.y_off + gy, c.z),
                                  pr.Vector3(0, 1, 0), c.yaw + v.yaw,
                                  pr.Vector3(s, s, s), tint)
             else:
-                self._draw_car_box(c, v)
+                self._draw_car_box(c, v, gy)
 
-    def _draw_car_box(self, c, v) -> None:
+    def _draw_car_box(self, c, v, gy: float = 0.0) -> None:
         body, cabin = _c(v.color), _c(tuple(int(x * 0.6) for x in v.color))
         glass = pr.Color(140, 180, 210, 255)
         L, W, H = v.box
         horiz = c.dx != 0                       # E/W → length along x, else along z
         bx, bz = (L, W) if horiz else (W, L)
-        pr.draw_cube(pr.Vector3(c.x, H * 0.28, c.z), bx, H * 0.45, bz, body)      # chassis
+        pr.draw_cube(pr.Vector3(c.x, gy + H * 0.28, c.z), bx, H * 0.45, bz, body)      # chassis
         cx2, cz2 = (L * 0.5, W * 0.82) if horiz else (W * 0.82, L * 0.5)
-        pr.draw_cube(pr.Vector3(c.x, H * 0.62, c.z), cx2, H * 0.42, cz2, cabin)   # cabin
-        pr.draw_cube(pr.Vector3(c.x, H * 0.62, c.z), cx2 * 0.98, H * 0.30, cz2 * 0.98, glass)
+        pr.draw_cube(pr.Vector3(c.x, gy + H * 0.62, c.z), cx2, H * 0.42, cz2, cabin)   # cabin
+        pr.draw_cube(pr.Vector3(c.x, gy + H * 0.62, c.z), cx2 * 0.98, H * 0.30, cz2 * 0.98, glass)
         ox, oz = (L * 0.34, W * 0.5) if horiz else (W * 0.5, L * 0.34)
         for sx in (-ox, ox):
             for sz in (-oz, oz):
-                pr.draw_cube(pr.Vector3(c.x + sx, 0.16, c.z + sz), 0.5, 0.34, 0.5,
+                pr.draw_cube(pr.Vector3(c.x + sx, gy + 0.16, c.z + sz), 0.5, 0.34, 0.5,
                              pr.Color(24, 24, 28, 255))
 
     # --- static street furniture ------------------------------------------
@@ -752,7 +774,7 @@ class Park:
             ld = caches[source].get(name)
             if ld is None:
                 continue
-            pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off * scl, z),
+            pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off * scl + self.ground_y(x, z), z),
                              pr.Vector3(0, 1, 0), yaw, pr.Vector3(scl, scl, scl), pr.WHITE)
 
     def _draw_quest_marker(self, n: NpcBuilding) -> None:
@@ -768,32 +790,52 @@ class Park:
         floats. Shared by quest-stop buildings AND free-standing quest NPCs (e.g. the
         park intern) so every "go here next" cue looks identical — one source of truth."""
         col = pr.Color(90, 210, 230, 255)
-        pr.draw_cylinder(pr.Vector3(x, 0.05, z), 3.2, 3.2, 0.05, 26, col)
-        pr.draw_cylinder_wires(pr.Vector3(x, 0.07, z), 3.4, 3.4, 0.07, 26, col)
+        gy = self.ground_y(x, z)
+        pr.draw_cylinder(pr.Vector3(x, gy + 0.05, z), 3.2, 3.2, 0.05, 26, col)
+        pr.draw_cylinder_wires(pr.Vector3(x, gy + 0.07, z), 3.4, 3.4, 0.07, 26, col)
         # a bobbing "!" diamond marker (uses time for a gentle float)
-        my = head_y + 0.25 * math.sin(pr.get_time() * 2.2 + x)
+        my = gy + head_y + 0.25 * math.sin(pr.get_time() * 2.2 + x)
         pr.draw_cylinder(pr.Vector3(x, my, z), 0.0, 0.42, 0.5, 4, col)        # spike down
         pr.draw_cylinder(pr.Vector3(x, my + 0.5, z), 0.42, 0.0, 0.5, 4, col)  # spike up
+
+    def draw_guide_beacon(self, x: float, z: float, head_y: float = 7.5) -> None:
+        """The 'go here' marker for the to-do you picked on your phone. Deliberately
+        brighter, taller, and gold (vs. the cyan quest rings) so the one objective you
+        chose stands out from every other quest stop — a pulsing ground ring, four
+        corner posts, a soft beam of light you can spot across the city, and a bobbing
+        chevron over the door."""
+        t = pr.get_time()
+        gold = pr.Color(255, 205, 90, 255)
+        gy = self.ground_y(x, z)
+        pulse = 3.7 + 0.5 * math.sin(t * 3.0)
+        pr.draw_cylinder(pr.Vector3(x, gy + 0.06, z), pulse, pulse, 0.06, 30, gold)
+        pr.draw_cylinder_wires(pr.Vector3(x, gy + 0.08, z), pulse + 0.25, pulse + 0.25, 0.08, 30, gold)
+        beam = pr.Color(255, 215, 120, 70)                # a column of light, visible from afar
+        pr.draw_cylinder(pr.Vector3(x, gy, z), 0.45, 0.7, head_y, 16, beam)
+        for ox, oz in ((-2.7, -2.7), (2.7, -2.7), (-2.7, 2.7), (2.7, 2.7)):
+            pr.draw_cylinder(pr.Vector3(x + ox, gy, z + oz), 0.14, 0.14, 3.0, 6, gold)
+        my = gy + head_y + 0.3 * math.sin(t * 2.4 + x)    # a bobbing chevron pointing at the door
+        pr.draw_cylinder(pr.Vector3(x, my, z), 0.0, 0.55, 0.6, 4, gold)        # spike down
+        pr.draw_cylinder(pr.Vector3(x, my + 0.6, z), 0.55, 0.0, 0.6, 4, gold)  # spike up
 
     def _draw_beacon(self, b: Building) -> None:
         """Street-level marker for an office lot: a glowing ground ring around the
         base plus a marker pole + orb at the front door. HQ gold, leased green,
         available orange — so you can always find your buildings."""
         col = {"hq": (255, 212, 96), "leased": (96, 224, 136)}.get(b.status, (255, 150, 70))
+        gy = self.ground_y(b.x, b.z)
         # a glowing ground pad around the base — visible at street level from any
         # side (a sky beam would be hidden behind these tall buildings).
-        pr.draw_cylinder(pr.Vector3(b.x, 0.05, b.z), 3.7, 3.7, 0.06, 28, _c(col))
-        pr.draw_cylinder_wires(pr.Vector3(b.x, 0.07, b.z), 3.9, 3.9, 0.08, 28, _c(col))
+        pr.draw_cylinder(pr.Vector3(b.x, gy + 0.05, b.z), 3.7, 3.7, 0.06, 28, _c(col))
+        pr.draw_cylinder_wires(pr.Vector3(b.x, gy + 0.07, b.z), 3.9, 3.9, 0.08, 28, _c(col))
         # corner posts so it reads even when you're right up against the building
         for ox, oz in ((-2.6, -2.6), (2.6, -2.6), (-2.6, 2.6), (2.6, 2.6)):
-            pr.draw_cylinder(pr.Vector3(b.x + ox, 0.0, b.z + oz), 0.14, 0.14, 3.2, 6, _c(col))
+            pr.draw_cylinder(pr.Vector3(b.x + ox, gy, b.z + oz), 0.14, 0.14, 3.2, 6, _c(col))
 
     def _draw_streets(self, cx: float = 0.0, cz: float = 0.0) -> None:
         span = (AVENUES + 1) * BLOCK
-        # Base concrete sits a hair BELOW the road tiles (~y=0) so the two coplanar
-        # surfaces don't z-fight (the flickering "floor"). Characters stand on the
-        # tiles/lawns, not this plane, so the small drop is invisible in play.
-        pr.draw_plane(pr.Vector3(0, GROUND_Y, 0), pr.Vector2(span, span), GROUND)
+        # (The flat base concrete is now the terrain's flat basin — see self.terrain,
+        # drawn in draw(). It renders concrete-grey within city_radius at GROUND_Y.)
         # Modular road tiles: a 4-way at every intersection on the block grid,
         # scaled so one tile fills a block (its corners meet at the building
         # addresses). Falls back to flat asphalt strips if the tile isn't there.
@@ -812,8 +854,9 @@ class Park:
                 if (x - cx) ** 2 + (z - cz) ** 2 > cull:
                     continue
                 # Adjacent tiles overlap (over-scaled); alternate height so the
-                # coincident sidewalks/road don't z-fight — one always wins.
-                y = STREET_Y_OFF + STREET_PARITY * ((a + s) % 2)
+                # coincident sidewalks/road don't z-fight — one always wins. Each tile
+                # sits at its block-centre ground height (gentle terraces over the roll).
+                y = STREET_Y_OFF + STREET_PARITY * ((a + s) % 2) + self.ground_y(x, z)
                 pr.draw_model_ex(ld.model, pr.Vector3(x, y, z),
                                  pr.Vector3(0, 1, 0), 0.0, scale, pr.WHITE)
 
@@ -832,10 +875,10 @@ class Park:
                     mul: float = 1.0, vboost: float = HEIGHT_BOOST) -> None:
         """Draw a building model scaled to fit and stretched taller by `vboost`."""
         sx = ld.scale * mul
-        # Sink the base just below the road surface (~y=0) so the building's flat
-        # bottom isn't coplanar with the tiles — that coincidence z-fights and
-        # flickers at the ground line. The buried lip is hidden by the road/ground.
-        y = ld.y_off * mul * vboost - BUILDING_SINK
+        # Sink the base just below the road surface so the building's flat bottom
+        # isn't coplanar with the tiles (that coincidence z-fights), then ride the
+        # terrain so buildings sit on the gentle roll with everything else.
+        y = ld.y_off * mul * vboost - BUILDING_SINK + self.ground_y(x, z)
         pr.draw_model_ex(ld.model, pr.Vector3(x, y, z),
                          pr.Vector3(0, 1, 0), yaw, pr.Vector3(sx, sx * vboost, sx), tint)
 
@@ -856,15 +899,16 @@ class Park:
         self._draw_shell(ld, n.x, n.z, 0.0, pr.WHITE, vboost=self.height_mult(n.x, n.z))
         front = n.z + ld.half_d
         aw = _c(n.awning)
+        gy = self.ground_y(n.x, n.z)
         # striped door canopy
-        pr.draw_cube(pr.Vector3(n.x, 1.7, front + 0.25), TARGET_W * 0.72, 0.16, 0.7, aw)
-        pr.draw_cube(pr.Vector3(n.x, 1.5, front + 0.58), TARGET_W * 0.72, 0.32, 0.06, aw)
+        pr.draw_cube(pr.Vector3(n.x, gy + 1.7, front + 0.25), TARGET_W * 0.72, 0.16, 0.7, aw)
+        pr.draw_cube(pr.Vector3(n.x, gy + 1.5, front + 0.58), TARGET_W * 0.72, 0.32, 0.06, aw)
         # themed word-sign over the canopy (if any)
         if n.sign:
             sld = self._models.get(n.sign)
             if sld is not None:
                 s = sld.scale * (SIGN_W / TARGET_W)
-                pr.draw_model_ex(sld.model, pr.Vector3(n.x, 2.2, front + 0.2),
+                pr.draw_model_ex(sld.model, pr.Vector3(n.x, gy + 2.2, front + 0.2),
                                  pr.Vector3(0, 1, 0), 0.0, pr.Vector3(s, s, s), pr.WHITE)
 
     def _draw_parks(self, cx: float, cz: float, season: str) -> None:
@@ -880,14 +924,15 @@ class Park:
         for p in self.parks:
             if (p.x - cx) ** 2 + (p.z - cz) ** 2 > cull:
                 continue
+            gy = self.ground_y(p.x, p.z)
             # lawn, then a path cross laid just above it (avoid z-fighting with +y)
-            pr.draw_plane(pr.Vector3(p.x, 0.04, p.z), pr.Vector2(h * 2, h * 2), grass)
-            pr.draw_plane(pr.Vector3(p.x, 0.06, p.z), pr.Vector2(h * 2, 1.6), path)
-            pr.draw_plane(pr.Vector3(p.x, 0.06, p.z), pr.Vector2(1.6, h * 2), path)
+            pr.draw_plane(pr.Vector3(p.x, gy + 0.04, p.z), pr.Vector2(h * 2, h * 2), grass)
+            pr.draw_plane(pr.Vector3(p.x, gy + 0.06, p.z), pr.Vector2(h * 2, 1.6), path)
+            pr.draw_plane(pr.Vector3(p.x, gy + 0.06, p.z), pr.Vector2(1.6, h * 2), path)
             # central fountain: stone basin, a thin water disc, a low spout pillar
-            pr.draw_cylinder(pr.Vector3(p.x, 0.0, p.z), 1.15, 1.15, 0.45, 18, kerb)
-            pr.draw_cylinder(pr.Vector3(p.x, 0.30, p.z), 0.95, 0.95, 0.22, 18, water)
-            pr.draw_cylinder(pr.Vector3(p.x, 0.45, p.z), 0.16, 0.16, 0.75, 10, kerb)
+            pr.draw_cylinder(pr.Vector3(p.x, gy + 0.0, p.z), 1.15, 1.15, 0.45, 18, kerb)
+            pr.draw_cylinder(pr.Vector3(p.x, gy + 0.30, p.z), 0.95, 0.95, 0.22, 18, water)
+            pr.draw_cylinder(pr.Vector3(p.x, gy + 0.45, p.z), 0.16, 0.16, 0.75, 10, kerb)
 
     def _draw_trees(self, cx: float, cz: float, season: str) -> None:
         cull = CULL_DIST * CULL_DIST
@@ -901,23 +946,25 @@ class Park:
                 self._draw_tree_fallback(x, z, scl, season)
                 continue
             s = ld.scale * scl
-            pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off * scl, z),
+            pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off * scl + self.ground_y(x, z), z),
                              pr.Vector3(0, 1, 0), yaw, pr.Vector3(s, s, s), tint)
 
     def _draw_tree_fallback(self, x: float, z: float, scl: float, season: str) -> None:
         """Cylinder-trunk + sphere-canopy stand-in if a tree model can't load,
         tinted to roughly match the season."""
         h = 2.0 * scl
-        pr.draw_cylinder(pr.Vector3(x, 0, z), 0.12, 0.16, h, 7, _c((110, 78, 52)))
+        gy = self.ground_y(x, z)
+        pr.draw_cylinder(pr.Vector3(x, gy, z), 0.12, 0.16, h, 7, _c((110, 78, 52)))
         canopy = {"Autumn": (196, 120, 52), "Winter": (224, 228, 236),
                   "Dead": (122, 96, 64)}.get(season, (66, 132, 72))
-        pr.draw_sphere(pr.Vector3(x, h + 0.3, z), 0.8 * scl, _c(canopy))
-        pr.draw_sphere(pr.Vector3(x + 0.3, h + 0.7, z), 0.55 * scl, _c(canopy))
+        pr.draw_sphere(pr.Vector3(x, gy + h + 0.3, z), 0.8 * scl, _c(canopy))
+        pr.draw_sphere(pr.Vector3(x + 0.3, gy + h + 0.7, z), 0.55 * scl, _c(canopy))
 
     def _draw_building(self, b: Building) -> None:
+        gy = self.ground_y(b.x, b.z)
         ld = self._models.get(b.model)
         if ld is None:                       # fallback box if a model is missing
-            pr.draw_cube(pr.Vector3(b.x, 2, b.z), TARGET_W, 4, TARGET_W, _c(b.color))
+            pr.draw_cube(pr.Vector3(b.x, gy + 2, b.z), TARGET_W, 4, TARGET_W, _c(b.color))
             top = 4.2
         else:
             # leased = full colour; available = greyed so it reads as "for lease"
@@ -928,5 +975,5 @@ class Park:
 
         # floating status banner above the building
         band = _c(b.color) if b.leased else SIGN_LEASE
-        pr.draw_cube(pr.Vector3(b.x, top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, band)
-        pr.draw_cube_wires(pr.Vector3(b.x, top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, _c((0, 0, 0), 80))
+        pr.draw_cube(pr.Vector3(b.x, gy + top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, band)
+        pr.draw_cube_wires(pr.Vector3(b.x, gy + top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, _c((0, 0, 0), 80))
