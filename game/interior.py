@@ -140,7 +140,13 @@ def default_structure(model: str, wing_plan: str, reception: bool = True) -> dic
 
 def for_building(building, plans) -> "BuildingInterior":
     """Build the interior for a Park building, using its authored `structure` or a
-    default derived from its model's story count + wing plan."""
+    default derived from its model's story count + wing plan.
+
+    Homes are the exception: they're a single room — no floors, no wings, no
+    elevator — regardless of how many storeys their facade model has, so they always
+    take the legacy single-room path (just the plan, entered straight from the city)."""
+    if getattr(building, "home", False):
+        return build_interior(building.id, None, building.plan, plans)
     struct = getattr(building, "structure", None) or default_structure(
         building.model, building.plan)
     return build_interior(building.id, struct, building.plan, plans)

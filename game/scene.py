@@ -136,13 +136,57 @@ class Scene:
 
     def _draw_fixtures(self, depth: float) -> None:
         """Per-room fixtures keyed off the plan's zones: a reception desk in the
-        lobby and elevator doors wherever there's an elevator."""
+        lobby, elevator doors wherever there's an elevator, and a flight of stairs
+        plus a bed in a home."""
         for z in self.plan.zones:
             x, zz = self.plan.grid_to_world(z.col, z.row)
             if z.kind == "reception":
                 self._draw_reception(x, zz)
             elif z.kind == "elevator":
                 self._draw_elevator_doors(x, zz, depth)
+            elif z.kind == "stairs":
+                self._draw_stairs(x, zz)
+            elif z.kind == "bed":
+                self._draw_bed(x, zz)
+
+    def _draw_stairs(self, x: float, z: float) -> None:
+        """A wooden flight of stairs climbing toward the back wall (-z), with a small
+        upper landing and a stepped banister down the open (+x) side. Every home has
+        one — it's the feature that makes a room read as a home, not an office."""
+        wood = pr.Color(150, 110, 74, 255)
+        riser = pr.Color(120, 88, 60, 255)
+        rail = pr.Color(96, 72, 50, 255)
+        steps, sh, sd, sw = 7, 0.19, 0.34, 1.5
+        for i in range(steps):
+            cy = sh / 2 + i * sh
+            cz = z - i * sd                                   # march up toward the wall
+            pr.draw_cube(pr.Vector3(x, cy, cz), sw, sh, sd, wood)            # tread
+            pr.draw_cube(pr.Vector3(x, cy - sh / 2, cz - sd / 2), sw, i * sh + sh, 0.04, riser)
+            pr.draw_cube_wires(pr.Vector3(x, cy, cz), sw, sh, sd, pr.Color(0, 0, 0, 55))
+            # banister post + cap on the open side, rising with the steps
+            px = x + sw / 2 - 0.06
+            pr.draw_cube(pr.Vector3(px, cy + 0.45, cz), 0.06, 0.9, 0.06, rail)
+            pr.draw_cube(pr.Vector3(px, cy + 0.9, cz), 0.1, 0.06, sd, rail)
+        # upper landing the stairs arrive on
+        top_y = steps * sh
+        top_z = z - steps * sd
+        pr.draw_cube(pr.Vector3(x, top_y - sh / 2, top_z - sd * 0.7), sw, sh, sd * 1.8, wood)
+        pr.draw_cube_wires(pr.Vector3(x, top_y - sh / 2, top_z - sd * 0.7), sw, sh, sd * 1.8,
+                           pr.Color(0, 0, 0, 55))
+
+    def _draw_bed(self, x: float, z: float) -> None:
+        """A made bed (frame + mattress + blanket + pillow + headboard). The head is
+        at -z, against the back wall, so it faces into the room."""
+        frame = pr.Color(120, 92, 64, 255)
+        mattress = pr.Color(232, 234, 240, 255)
+        blanket = pr.Color(70, 110, 170, 255)
+        pillow = pr.Color(246, 246, 250, 255)
+        bw, bl = 1.7, 2.3                                     # width (x), length (z)
+        pr.draw_cube(pr.Vector3(x, 0.22, z), bw, 0.3, bl, frame)              # frame base
+        pr.draw_cube(pr.Vector3(x, 0.46, z), bw - 0.1, 0.2, bl - 0.1, mattress)  # mattress
+        pr.draw_cube(pr.Vector3(x, 0.52, z + bl * 0.16), bw - 0.1, 0.12, bl * 0.62, blanket)  # blanket
+        pr.draw_cube(pr.Vector3(x, 0.58, z - bl / 2 + 0.42), bw - 0.55, 0.16, 0.55, pillow)   # pillow
+        pr.draw_cube(pr.Vector3(x, 0.62, z - bl / 2 - 0.04), bw, 0.74, 0.1, frame)            # headboard
 
     def _draw_reception(self, x: float, z: float) -> None:
         body = pr.Color(120, 92, 64, 255)

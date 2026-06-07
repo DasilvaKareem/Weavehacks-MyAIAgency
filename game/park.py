@@ -62,7 +62,10 @@ DESKS_PER_LEASE = 3    # capacity unlocked per leased office
 LOT_ADDR = {"growth": (9, 10), "hq": (10, 10), "finance": (11, 10),
             "eng": (9, 11), "research": (10, 11), "design": (11, 11),
             # The affordable starter office (unlocked by meeting Mae in the park).
-            "starter": (12, 10)}
+            "starter": (12, 10),
+            # Maple Street: a residential row south of downtown (by the apartment +
+            # post-office landmarks) where you can buy a home of your own.
+            "home_studio": (9, 16), "home_cottage": (10, 16), "home_loft": (11, 16)}
 # Spread the shops across the whole city so you find them while exploring.
 NPC_ADDR = {"barbershop": (4, 6), "hardware": (5, 14), "grocery": (7, 4),
             "bookshop": (6, 17), "cafe": (13, 5), "convenience": (15, 16),
@@ -92,6 +95,7 @@ LANE = pr.Color(210, 200, 120, 255)       # centre-line dashes
 ROOF = pr.Color(58, 62, 72, 255)
 WINDOW = pr.Color(150, 200, 235, 255)
 SIGN_LEASE = pr.Color(220, 80, 70, 255)   # red "for lease" band
+SIGN_SALE = pr.Color(70, 170, 120, 255)   # green "for sale" band (homes)
 
 
 def block_pos(ave: float, st: float) -> tuple[float, float]:
@@ -244,6 +248,7 @@ class Building:
     plan: str = "hq"   # floor-plan template id (single-room buildings)
     structure: dict | None = None  # optional floors/wings interior (see interior.py)
     locked: bool = False  # can't be leased until a gate is cleared (e.g. meet an NPC)
+    home: bool = False    # a place to live (single room + stairs, no desks) vs. an office
 
     @property
     def leased(self) -> bool:
@@ -465,7 +470,7 @@ class Park:
                 deposit=lot["deposit"], rent=lot["rent"], model=lot["model"],
                 color=tuple(lot["color"]), x=x, z=z, status=lot["status"],
                 plan=lot.get("plan", "hq"), structure=lot.get("structure"),
-                locked=lot.get("locked", False),
+                locked=lot.get("locked", False), home=lot.get("home", False),
             ))
         # snap the NPC shops to their grid addresses too
         for n in self.npc:
@@ -995,6 +1000,6 @@ class Park:
             top = ld.top * vb
 
         # floating status banner above the building
-        band = _c(b.color) if b.leased else SIGN_LEASE
+        band = _c(b.color) if b.leased else (SIGN_SALE if b.home else SIGN_LEASE)
         pr.draw_cube(pr.Vector3(b.x, gy + top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, band)
         pr.draw_cube_wires(pr.Vector3(b.x, gy + top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, _c((0, 0, 0), 80))
