@@ -230,7 +230,9 @@ PARK_WATER = {"Summer": (120, 170, 205), "Autumn": (120, 170, 205),
 
 
 def _c(rgb, a: int = 255) -> pr.Color:
-    return pr.Color(int(rgb[0]), int(rgb[1]), int(rgb[2]), a)
+    if isinstance(rgb, (list, tuple)):     # (r,g,b) sequence → build a Color
+        return pr.Color(int(rgb[0]), int(rgb[1]), int(rgb[2]), a)
+    return rgb                             # already a pr.Color (e.g. ROOF) — pass through
 
 
 @dataclass
