@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pyray as pr
 
-from . import config
+from . import businesses, config
 from .season import SEASON_SUFFIX, SEASON_TINT
 from .terrain import Terrain
 
@@ -512,6 +512,7 @@ class Park:
         reserved |= {(10, 9), (9, 9), (11, 9)}   # keep the spawn lane clear
         reserved |= self._park_addrs             # a park lawn, not a building, here
         city = []     # (model, x, z, yaw, scale_mul)
+        self._biz: list[businesses.Business] = []   # one tenant per backdrop block
         for a in range(1, AVENUES + 1):
             for s in range(1, STREETS + 1):
                 if (a, s) in reserved:
@@ -521,8 +522,14 @@ class Park:
                 z += rng.uniform(-0.3, 0.3)
                 yaw = rng.choice([0.0, 90.0, 180.0, 270.0])
                 vboost = _skyline(a, s) * rng.uniform(0.9, 1.12)   # heightmap + jitter
-                city.append((rng.choice(SCENERY_MODELS), x, z, yaw,
-                             rng.uniform(0.92, 1.1), vboost))
+                model = rng.choice(SCENERY_MODELS)
+                city.append((model, x, z, yaw, rng.uniform(0.92, 1.1), vboost))
+                # Give this backdrop block a real tenant so it can be walked up to
+                # (drawing stays the cheap culled path; this list is only scanned on
+                # interaction). A handful of blocks are hand-placed named landmarks.
+                sub = businesses.LANDMARK_ADDR.get((a, s))
+                self._biz.append(businesses.landmark(sub, model, x, z) if sub
+                                 else businesses.generate(model, x, z))
 
         # Street trees line the SIDEWALKS, not the road. Roads run down the half-
         # address lines between blocks, so block_pos(a+0.5, s+0.5) is the middle of
@@ -642,6 +649,20 @@ class Park:
             d = math.hypot(dx, dz)
             if d < best_d:
                 best, best_d = n, d
+        return best
+
+    def nearest_business(self, px: float, pz: float):
+        """The backdrop tenant (generated Business) within REACH of (px,pz). Every
+        block has one, so this is the fallback that makes the whole city walkable —
+        checked only when no lease lot or interactive shop is in reach."""
+        best, best_d = None, REACH
+        hw = TARGET_W / 2.0
+        for b in self._biz:
+            dx = max(abs(px - b.x) - hw, 0.0)
+            dz = max(abs(pz - b.z) - hw, 0.0)
+            d = math.hypot(dx, dz)
+            if d < best_d:
+                best, best_d = b, d
         return best
 
     # --- economy -----------------------------------------------------------

@@ -79,7 +79,99 @@ def init_weave():
         _client = weave.init(project)  # auto-patches LangChain/Gemini
         _inited = True
         log.info("Weave tracing on -> project %s", project)
+        try:  # turn on live server-side monitoring of agent turns (best-effort)
+            from . import weave_monitor
+
+            weave_monitor.ensure_monitors()
+        except Exception as exc:  # monitor optional — never block tracing
+            log.debug("monitor bootstrap skipped: %s", exc)
     except Exception as exc:  # missing dep, bad key, network — degrade silently
         log.warning("Weave unavailable (%s); running untraced.", exc)
         _inited = True  # don't retry a broken init on every call
     return _client
+
+
+# --- live (online) scoring + human feedback ---------------------------------
+#
+# The read side (weave_tools / weave_metrics) answers "who is expensive?". This
+# is the QUALITY side: score each live reply the instant it's produced, and let
+# the CEO 👍/👎 it. Both write onto the very Weave call the reply was traced as,
+# so quality lands right next to cost in the same trace.
+
+def call_op(op, *args, should_raise: bool = True, **kwargs):
+    """Invoke a @traced op, returning (result, weave_call_or_None).
+
+    With weave on, `op` is a weave op exposing `.call()` which returns
+    (output, Call) — we surface the Call so the caller can score it / attach
+    feedback. With weave off (`traced` was identity), there's no `.call`, so we
+    just run the function and return a None call. should_raise=True preserves the
+    original behavior where a hard failure propagates (chat.py salvages partials).
+    """
+    caller = getattr(op, "call", None)
+    if caller is None:  # weave absent — op is the plain function
+        return op(*args, **kwargs), None
+    out, call = caller(*args, __should_raise=should_raise, **kwargs)
+    return out, call
+
+
+def score_call(call, scorers=None, background: bool = True) -> None:
+    """Apply online scorers to a live call (logs their scores onto that call).
+
+    Defaults to the chat-reply scorers (reply quality + coworker tone). Runs in a
+    daemon thread so an interactive turn never waits on the judge. No-op when the
+    call is None (weave off) or scoring isn't configured.
+    """
+    if call is None:
+        return
+    try:
+        from . import weave_scorers
+    except Exception:
+        return
+    scs = scorers if scorers is not None else weave_scorers.online_scorers()
+    if not scs:
+        return
+
+    def _run():
+        import asyncio
+
+        for s in scs:
+            try:
+                asyncio.run(call.apply_scorer(s))  # apply_scorer is async
+            except Exception as exc:  # judge/network hiccup — drop this score only
+                log.debug("apply_scorer(%s) failed: %s", getattr(s, "name", s), exc)
+
+    if background:
+        import threading
+
+        threading.Thread(target=_run, name="weave-score", daemon=True).start()
+    else:
+        _run()
+
+
+def react(call, emoji: str = "👍", creator: str = "CEO") -> bool:
+    """Attach a human 👍/👎 reaction to a traced call. Returns True on success.
+
+    This is the CEO's feedback signal — it lands as Weave feedback on the exact
+    reply call, so the People Analytics Lead can rank agents by how the CEO
+    actually rates them, not just by cost. Safe no-op when call is None.
+    """
+    if call is None:
+        return False
+    try:
+        call.feedback.add_reaction(emoji, creator=creator)
+        return True
+    except Exception as exc:
+        log.debug("reaction failed: %s", exc)
+        return False
+
+
+def annotate(call, note: str, creator: str = "CEO") -> bool:
+    """Attach a free-text note (the CEO's words) to a traced call."""
+    if call is None:
+        return False
+    try:
+        call.feedback.add_note(note, creator=creator)
+        return True
+    except Exception as exc:
+        log.debug("note failed: %s", exc)
+        return False

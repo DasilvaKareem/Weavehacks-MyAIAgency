@@ -83,6 +83,9 @@
         "I've shipped product and run ops at two startups — one cratered, one got bought. Either way I learned where the bodies are buried.",
         "Here's what I'd bring: I run the build and wrangle the team day to day, keep us shipping. You set the vision and stay glued to the customer. That's the split that works.",
         "(slides a coffee across the table)  So go on — pitch me. Why should I bet on you?"
+      ],
+      "done": [
+        "We're partners now — enough chit-chat. What are we building today?"
       ]
     },
 
@@ -92,6 +95,10 @@
         "Come in, take a seat. I'm an investor at Apex Ventures — I run our seed desk, the early bets the partners won't touch yet.",
         "I write the first checks, before there's any proof. Most don't make it. The ones that do are why I do this.",
         "I don't need a deck — I need conviction. Look me in the eye and pitch me: what are you building, and why should I fund it?"
+      ],
+      "done": [
+        "Good to see you again. We already shook on it — your seed check cleared. Now go prove me right.",
+        "Build something real with it. When you've got traction, the partners upstairs at Apex Ventures will want a word."
       ]
     },
 
@@ -112,12 +119,12 @@
       ]
     },
 
-    "customer":       { "who": "Chamber Clerk",  "lines": ["Welcome in. Let's get you on the books - who exactly are you building this for?"] },
-    "competitors":    { "who": "Research Analyst", "lines": ["Smart founders know the field. So tell me - who are you up against?"] },
-    "business_model": { "who": "Bureau Advisor", "lines": ["Let's talk money. How does this thing actually turn a profit?"] },
-    "logo":           { "who": "Sign Maker",     "lines": ["We'll mock something up for you. What should your logo look like?"] },
-    "domain":         { "who": "City Registrar", "lines": ["Let's stake your claim online. What domain do you want?"] },
-    "brand":          { "who": "Brand Designer", "lines": ["Time to look the part. Describe your brand for me - colors, vibe, all of it."] },
+    "customer":       { "who": "Chamber Clerk",  "lines": ["Welcome in. Let's get you on the books - who exactly are you building this for?"], "done": ["You're already on the books — your customer's on file. The other offices can help with the rest."] },
+    "competitors":    { "who": "Research Analyst", "lines": ["Smart founders know the field. So tell me - who are you up against?"], "done": ["We've already mapped your competition. Go put what you learned to work."] },
+    "model":          { "who": "Bureau Advisor", "lines": ["Let's talk money. How does this thing actually turn a profit?"], "done": ["Your business model's filed and in order. Off you go and make it pay."] },
+    "logo":           { "who": "Sign Maker",     "lines": ["We'll mock something up for you. What should your logo look like?"], "done": ["Your logo's done and looking sharp. Swing by if you ever want a reprint."] },
+    "domain":         { "who": "City Registrar", "lines": ["Let's stake your claim online. What domain do you want?"], "done": ["Your domain's registered and yours alone. Nothing left to file here."] },
+    "brand":          { "who": "Brand Designer", "lines": ["Time to look the part. Describe your brand for me - colors, vibe, all of it."], "done": ["Your brand's all set — colors, vibe, the works. Looks great out there."] },
     "pricing":        { "who": "Bank Advisor",   "lines": ["Let's not leave money on the table. How are you going to price this?"] },
 
     "value_prop":     { "who": "Incubator Mentor", "lines": ["Let's start at the heart of the canvas. What's the core value you promise customers?"] },

@@ -2,24 +2,26 @@
 
 Hold the talk button to record from the mic; release to transcribe. Speech →
 text goes through Gemini (same key as the chat backend); the agent's reply is
-spoken aloud with the built-in macOS `say` command. Everything that can block —
-the transcription network call — runs on a worker thread, so the render loop
-only ever polls.
+spoken aloud with **Gemini TTS** (`backend.tts`), so every employee keeps one
+distinct voice — the same one whether they speak in chat, on the phone, or in a
+meeting (voices are assigned deterministically by agent id). Everything that can
+block — the transcription and synthesis network calls — runs on worker threads,
+so the render loop only ever polls.
 
 The whole module degrades to a no-op if `sounddevice` (PortAudio) isn't
-installed or the mic is unavailable, so the game always runs. Install capture
-with:  brew install portaudio && .venv/bin/pip install sounddevice
+installed or the mic is unavailable (capture), or if PyAudio / an output device
+is missing (playback), so the game always runs. Install capture with:
+  brew install portaudio && .venv/bin/pip install sounddevice pyaudio
 """
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
 import io
 import os
-import re
-import subprocess
 import threading
 import wave
+
+from backend import tts as _engine
 
 SAMPLE_RATE = 16_000   # 16 kHz mono is plenty for speech and keeps uploads small
 CHANNELS = 1
@@ -120,71 +122,106 @@ def transcribe(wav_bytes: bytes, model: str) -> str:
     return (resp.text or "").strip()
 
 
-# --- text-to-speech (macOS `say`) -------------------------------------------
+# --- text-to-speech (Gemini) ------------------------------------------------
+# Reuse the backend TTS engine so an employee's voice is identical everywhere —
+# chat, phone, and voiced meetings all key off `backend.tts.voice_for(agent id)`.
+# Synthesis is a network call, so it runs on a single worker thread; playback is
+# chunked PCM through PyAudio and bails the moment a newer utterance arrives.
 
-_say_proc: subprocess.Popen | None = None
-
-
-_voices_cache: list[str] | None = None
-
-# macOS ships joke/instrument "voices" that don't sound human — never assign these.
-_NOVELTY = {
-    "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos",
-    "Good News", "Jester", "Organ", "Pipe Organ", "Superstar", "Trinoids",
-    "Whisper", "Wobble", "Zarvox",
-}
+_tts_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="voice-tts"
+)
+_play_lock = threading.Lock()
+_play_gen = 0                                   # bumped to cancel stale utterances
+_pa = None                                      # lazily-created PyAudio instance
+_pa_failed = False                              # PyAudio/output device unavailable
+_tts_cache: dict[tuple[str, str], bytes] = {}   # (voice, text) -> PCM, small LRU
+_CACHE_MAX = 64
 
 
 def list_voices() -> list[str]:
-    """Human-sounding English macOS `say` voice names, queried once and cached."""
-    global _voices_cache
-    if _voices_cache is None:
-        try:
-            out = subprocess.run(["say", "-v", "?"], capture_output=True,
-                                 text=True, timeout=5).stdout
-        except Exception:
-            out = ""
-        names = []
-        for line in out.splitlines():
-            m = re.match(r"^(.+?)\s{2,}([a-z]{2})[_-][A-Z]{2}", line)
-            if m and m.group(2) == "en":   # English voices read our replies best
-                name = m.group(1).strip()
-                if name not in _NOVELTY:
-                    names.append(name)
-        _voices_cache = names
-    return _voices_cache
+    """The Gemini voice pool — every agent is assigned a distinct one."""
+    return list(_engine.GEMINI_VOICES)
 
 
 def pick_voice(seed: str) -> str | None:
-    """Deterministically assign one installed voice to an agent (by id)."""
-    voices = list_voices()
-    if not voices:
+    """Deterministically assign one Gemini voice to an agent (stable + unique)."""
+    if not seed:
         return None
-    h = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16)
-    return voices[h % len(voices)]
+    return _engine.voice_for(seed)
 
 
 def speak(text: str, voice: str | None = None) -> None:
-    """Speak `text` aloud, interrupting any utterance already in progress."""
-    global _say_proc
+    """Speak `text` aloud in `voice` (a Gemini voice), interrupting any utterance
+    already in progress. Non-blocking: synthesis + playback happen off-thread."""
+    global _play_gen
     stop_speaking()
-    if not text:
+    if not text or not text.strip():
         return
-    cmd = ["say"]
-    if voice:
-        cmd += ["-v", voice]
-    cmd.append(text)
+    with _play_lock:
+        _play_gen += 1
+        gen = _play_gen
+    _tts_pool.submit(_synth_and_play, text.strip(), voice or "Kore", gen)
+
+
+def _synth_and_play(text: str, voice: str, gen: int) -> None:
+    if gen != _play_gen:            # superseded before we even started
+        return
+    key = (voice, text)
+    pcm = _tts_cache.get(key)
+    if pcm is None:
+        try:
+            pcm = _engine.synth_pcm(text, voice)
+        except Exception:
+            return                 # no key / offline / API error — stay silent
+        if pcm:
+            _tts_cache[key] = pcm
+            if len(_tts_cache) > _CACHE_MAX:
+                _tts_cache.pop(next(iter(_tts_cache)))
+    _play_pcm(pcm, gen)
+
+
+def _play_pcm(pcm: bytes, gen: int) -> None:
+    global _pa, _pa_failed
+    if not pcm or _pa_failed or gen != _play_gen:
+        return
     try:
-        _say_proc = subprocess.Popen(cmd)   # non-blocking
+        import pyaudio
     except Exception:
-        _say_proc = None
+        _pa_failed = True
+        return
+    if _pa is None:
+        try:
+            _pa = pyaudio.PyAudio()
+        except Exception:
+            _pa_failed = True
+            return
+    try:
+        stream = _pa.open(format=pyaudio.paInt16, channels=_engine.CHANNELS,
+                          rate=_engine.SAMPLE_RATE, output=True)
+    except Exception:
+        return
+    chunk = _engine.SAMPLE_RATE * 2 // 5         # ~0.1s of s16 mono per write
+    try:
+        for i in range(0, len(pcm), chunk):
+            if gen != _play_gen:                 # a newer utterance interrupted us
+                break
+            stream.write(pcm[i:i + chunk])
+    except Exception:
+        pass
+    finally:
+        try:
+            stream.stop_stream()
+            stream.close()
+        except Exception:
+            pass
 
 
 def stop_speaking() -> None:
-    global _say_proc
-    if _say_proc is not None and _say_proc.poll() is None:
-        _say_proc.terminate()
-    _say_proc = None
+    """Cancel any utterance currently synthesizing or playing."""
+    global _play_gen
+    with _play_lock:
+        _play_gen += 1
 
 
 # --- push-to-talk controller ------------------------------------------------

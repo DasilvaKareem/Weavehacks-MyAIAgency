@@ -118,14 +118,20 @@ class MeetingOrchestrator:
     # --- run ---------------------------------------------------------------
 
     def run(self, topic: str, agent_ids: list[str], *, max_turns: int = 6,
-            mode: str = "moderated", on_event=None) -> MeetingResult:
+            mode: str = "moderated", on_event=None, interjections=None) -> MeetingResult:
         cid, members = self.open_meeting(topic, agent_ids)
         return self.run_meeting(cid, topic, members, max_turns=max_turns,
-                                mode=mode, on_event=on_event)
+                                mode=mode, on_event=on_event, interjections=interjections)
 
     def run_meeting(self, cid: str, topic: str, members: dict, *, max_turns: int = 6,
-                    mode: str = "moderated", on_event=None) -> MeetingResult:
-        """Drive the turns then the CEO close. Posts every turn to RTDB as it goes."""
+                    mode: str = "moderated", on_event=None, interjections=None) -> MeetingResult:
+        """Drive the turns then the CEO close. Posts every turn to RTDB as it goes.
+
+        `interjections` is an optional zero-arg callable returning any new lines
+        the live human CEO has spoken since last checked (the Daily talk-back
+        path). Drained before each turn: each line is posted as a CEO turn and
+        folded into the transcript so the moderator routes a reply and agents
+        respond — but it is NOT re-voiced (the human already said it aloud)."""
         ids = list(members)
         # The moderator routes on this; annotate each attendee with the prior work
         # they bring so it can favour voices who can ground the call in real
@@ -139,8 +145,25 @@ class MeetingOrchestrator:
             if on_event:
                 on_event(who, content)
 
+        def drain_ceo() -> None:
+            """Fold any live CEO interjections into the call (posted + in the
+            transcript, but not voiced — the human already spoke them)."""
+            if not interjections:
+                return
+            try:
+                lines = interjections() or []
+            except Exception:
+                lines = []
+            for raw in lines:
+                line = (raw or "").strip()
+                if not line:
+                    continue
+                self._post(cid, CHAIR, "CEO", line)
+                transcript.append(("CEO", line))
+
         last = None
         for turn in range(max_turns):
+            drain_ceo()   # let the human steer before we pick the next voice
             speaker = self._next_speaker(mode, ids, transcript, roster, topic, turn, last)
             if speaker is None:           # moderator called the meeting
                 break
@@ -154,6 +177,7 @@ class MeetingOrchestrator:
             emit(row.name, text)
             last = speaker
 
+        drain_ceo()   # catch a final interjection before the chair wraps up
         summary = self._close(topic, transcript)
         self._post(cid, CHAIR, "CEO", summary)
         emit("CEO", summary)

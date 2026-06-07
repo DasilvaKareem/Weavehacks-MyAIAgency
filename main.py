@@ -47,6 +47,7 @@ from game.prologue import Prologue
 from game.menu import MainMenu
 from game.company_link import CompanyLink
 from game.chat_panel import ChatPanel
+from game.terminal_panel import TerminalPanel
 from game.drive_panel import DrivePanel
 from game.jobs_panel import JobsPanel
 from game.meeting_link import MeetingLink
@@ -77,8 +78,8 @@ ROLES = [
 DESK_COLS = [3, 5, 7, 9, 11, 13]
 DESK_ROWS = [2, 4, 6, 8]
 
-BASE_DESKS = 18          # capacity with just HQ (first 3 desk rows)
-DESKS_PER_LEASE = 3      # extra capacity per office leased in the park
+BASE_DESKS = 40          # headcount cap with just HQ (still clamped by a building's real desks)
+DESKS_PER_LEASE = 15     # extra capacity per office leased in the park
 
 
 def _load_env() -> None:
@@ -170,6 +171,8 @@ class Game:
         self._lady_talk = None             # current line index while chatting, else None
         self._park_toast = ""              # transient park message (e.g. "locked — meet Mae")
         self._park_toast_until = 0.0
+        self._biz_card = None              # generated-business greeting card, or None
+        self._biz_paid = set()             # business ids whose one-time reward we've paid
         # To-Do guide: pick a to-do on the Nokia and the city points the way to where
         # it gets done (gold beacon over the building + an on-screen arrow). Holds the
         # selected task key; the target world spot is re-resolved live each frame.
@@ -252,6 +255,14 @@ class Game:
             starter.locked = False                  # already met Mae: lease it freely
         self._pet_done = self.link.load_flag("pet_quest")   # already returned Biscuit?
         self._guitar_done = self.link.load_flag("guitar_quest")   # already returned the guitar?
+        try:                                                # backdrop tenants already tipped
+            self._biz_paid = set(json.loads(self.link.store.get_setting("biz_paid") or "[]"))
+        except Exception:
+            self._biz_paid = set()
+        # TalentWorks gives a one-time free hire: armed on your first agency visit,
+        # consumed by the next hire. Available = offered-but-not-yet-used.
+        self._free_hire = (self.link.load_flag("agency_free_hire_armed")
+                           and not self.link.load_flag("agency_free_hire_used"))
         self._last_persist = 0.0
         self._saved_cash = int(self.cash)
         self._saved_day = self.calendar.day
@@ -272,11 +283,14 @@ class Game:
         self.investor = InvestorPanel()    # pitch the VC for a funding round
         self.market = market_mod.Market.load(self.link)   # idle stock-market state
         self.farm = farm_mod.Farm.load(self.link)         # idle South-America farm
+        self._farm_notified = False        # one "come collect" inbox text per fill cycle
         self.market_panel = MarketPanel()  # bank/broker trading terminal
         self.slot_panel = SlotPanel()      # Lucky's Casino slot machine
         self.farm_panel = FarmPanel()      # Trade Embassy idle farm
         self.grant_panel = GrantPanel()    # Grants Office: LLM-judged funding
         self.chat = ChatPanel(self.link)
+        self.terminal = TerminalPanel(self.link)   # CEO Desk: the Global AI Terminal
+        self.terminal.on_hire = self._terminal_hire  # confirm + budget-check AI-proposed hires
         self.shop = ShopPanel(load_catalog())
         self.hire_catalog = load_agents()          # marketplace models for the phone Hire app
         self.meeting_link = MeetingLink(self.link.store)
@@ -314,6 +328,7 @@ class Game:
             roles=lambda: [t for t, _, _ in roster.ROLES],   # kept for parity
             cash=lambda: int(self.cash),
             can_hire=lambda: self.has_desk_space,
+            free_hire=lambda: self._free_hire,       # TalentWorks waived the next hire?
             hire=self._hire_candidate,               # (candidate, role_title) -> bool
             is_hr=lambda role: role in self._HR_ROLES,
             hire_by_text=self._hr_hire_from_text,    # (text) -> ack str | None
@@ -341,7 +356,7 @@ class Game:
                                 lambda: self.all_agents, self.inbox, self.taskboard,
                                 hire=hire_bridge, follow=follow_bridge,
                                 citymap=citymap_bridge, clock=clock_bridge,
-                                guide=guide_bridge)
+                                guide=guide_bridge, locate=self._agent_location)
         self.inbox.post("Company.AI",
                         "Welcome! Your team and the neighborhood reach you here. "
                         "Open the phone (N) and tap a message to read it.",
@@ -428,6 +443,10 @@ class Game:
         # Río's stolen-guitar quest resets too.
         self._guitar_done, self._guitar_stage, self._busker_talk = False, 0, None
         self.link.set_flag("guitar_quest", False)
+        # TalentWorks' one-time free hire is available again in the new city.
+        self._free_hire = False
+        self.link.set_flag("agency_free_hire_armed", False)
+        self.link.set_flag("agency_free_hire_used", False)
         self.company_name = "Company.AI"
         self.ceo_profile = None
         self.company = {}
@@ -439,6 +458,7 @@ class Game:
         self.phone.board = self.taskboard
         self.market = market_mod.Market.fresh()       # fresh portfolio for the new run
         self.farm = farm_mod.Farm.fresh()             # fresh farm for the new run
+        self._farm_notified = False
         for lst in (self.all_agents, self.agents):
             lst.clear()
         self.characters[:] = [self.player.ch]
@@ -540,9 +560,31 @@ class Game:
                 self.cash -= self.farm.buy(action[1])
         elif kind == "collect":
             self.cash += self.farm.collect()
+            self._farm_notified = False   # re-arm the reminder for the next fill cycle
         else:
             return
         self.farm.save(self.link)
+
+    # ~30 min of income (min $1,000) is the "barn's worth collecting" threshold;
+    # fires once per fill cycle (re-armed on collect), so it nudges without spamming.
+    _FARM_NOTICE_SECONDS = 1800
+    _FARM_NOTICE_MIN = 1000
+
+    def _maybe_farm_notice(self) -> None:
+        """Text the CEO once when the farm's uncollected harvest gets worth a trip,
+        so passive income doesn't sit forgotten. Re-armed after you collect."""
+        rate = self.farm.rate()
+        if rate <= 0 or self._farm_notified:
+            return
+        threshold = max(self._FARM_NOTICE_MIN, rate * self._FARM_NOTICE_SECONDS)
+        if self.farm.accrued >= threshold:
+            self._farm_notified = True
+            amt = int(self.farm.accrued)
+            self.inbox.post(
+                "Trade Attaché",
+                f"The South-America farm has ${amt:,} ready to harvest — swing by the "
+                f"Trade Embassy and collect it before the barn overflows!",
+                kind="npc", subject="🌾 Farm harvest ready", ts=pr.get_time())
 
     def _refresh_tasks(self) -> None:
         """Auto-complete any to-do whose condition now holds (a role hired, a
@@ -610,7 +652,17 @@ class Game:
 
     def _open_hire_store(self) -> None:
         """Walk into TalentWorks Staffing: pull out the Nokia on its Hire app, so
-        all hiring funnels through the one phone flow (no separate panel)."""
+        all hiring funnels through the one phone flow (no separate panel). Your first
+        visit arms a one-time free hire (the agency waives the fee on the next hire)."""
+        if (not self.link.load_flag("agency_free_hire_used")
+                and not self.link.load_flag("agency_free_hire_armed")):
+            self.link.set_flag("agency_free_hire_armed", True)
+            self._free_hire = True
+            self.inbox.post(
+                "TalentWorks Staffing",
+                "Welcome aboard! Your first hire with us is on the house — pick anyone "
+                "and we'll waive the fee. After that it's our usual rates.",
+                kind="npc", subject="🎟️ Free hire — first one's on us", ts=pr.get_time())
         self.phone.open_hire()
         self._e_cooldown = 8                     # swallow the E that opened the store
 
@@ -913,6 +965,25 @@ class Game:
     def has_desk_space(self) -> bool:
         return len(self.all_agents) < self.max_desks
 
+    def _agent_location(self, agent) -> str:
+        """A short, human label for where an agent sits — building · floor · wing in
+        the current building. Shown on the phone's Contacts so you can find everyone
+        (e.g. 'HQ · F1 · East Wing'). Floor matches the elevator menu (Ground = lobby
+        level, F1/F2… upstairs)."""
+        bld = self.current_building.id.upper() if self.current_building else ""
+        key = getattr(agent, "home_room", None)
+        room = self.interior.rooms.get(key) if key else None
+        if room is None:
+            return bld or "—"
+        floor = "Ground" if room.level == 0 else f"F{room.level}"
+        if room.slot in ("east", "west"):
+            spot = f"{room.slot.title()} Wing"
+        elif room.kind in ("lobby", "elevator_lobby"):
+            spot = "Lobby"
+        else:
+            spot = "Main floor"
+        return " · ".join(p for p in (bld, floor, spot) if p)
+
     @property
     def can_hire(self) -> bool:
         return self.cash >= config.HIRE_COST and self.has_desk_space
@@ -999,19 +1070,24 @@ class Game:
         chosen role + its rate onto the candidate's name & look, and commit. Returns
         True if the hire went through (had a desk and could afford the rate)."""
         rate = roster.role_rate(role_title)
-        if not self.has_desk_space or self.cash < rate:
+        free = self._free_hire                         # TalentWorks' one-time free hire
+        if not self.has_desk_space or (not free and self.cash < rate):
             return False
         cand = dict(cand)                              # don't mutate the caller's dict
         for title, dept, color in roster.ROLES:        # stamp the requested role
             if title == role_title:
                 cand["role"], cand["dept"], cand["color"] = title, dept, color
                 break
-        cand["cost"] = rate
+        cand["cost"] = 0 if free else rate
         appearance = cand.get("appearance") or {"skin_idx": 1, "hair_idx": 0,
                                                 "hair_style": 0, "eye_idx": 0}
         before = len(self.all_agents)
         self._commit_hire(cand, appearance)
-        return len(self.all_agents) > before
+        hired = len(self.all_agents) > before
+        if hired and free:                             # consume the voucher (persisted)
+            self._free_hire = False
+            self.link.set_flag("agency_free_hire_used", True)
+        return hired
 
     def _commit_hire(self, cand: dict, appearance: dict) -> None:
         """Hire the confirmed candidate: persist to SQL, add to the roster, charge.
@@ -1080,7 +1156,7 @@ class Game:
         "No, I insist. Go make it count — I've got high hopes for you.",
     ]
     # When you go flat broke, Bob texts you to meet at a park and spots you cash.
-    BOB_RESCUE_GIFT = 2500
+    BOB_RESCUE_GIFT = 5000
     BOB_RESCUE_PARK_ID = "maple_commons"
     BOB_RESCUE_LINES = [
         "Hey, you made it. I got worried when I heard things had gotten tight.",
@@ -1134,6 +1210,7 @@ class Game:
             self._bob_done = True
             self.cash += self.BOB_GIFT
             self.link.set_flag("bob_gift", True)
+            self._mark_deed("q_bob")
             self.inbox.post("Bob", "So good to see you back in the city. I slipped you "
                             f"${self.BOB_GIFT:,} to get started — no strings. Go build "
                             "something great; I've got high hopes for you.",
@@ -1255,6 +1332,7 @@ class Game:
         self._e_cooldown = 8
         self._starter_unlocked = True
         self.link.set_flag("starter_office", True)
+        self._mark_deed("q_starter")
         starter = next((b for b in self.park.buildings if b.id == "starter"), None)
         if starter is not None:
             starter.locked = False
@@ -1339,6 +1417,7 @@ class Game:
             self._pet_done = True
             self.cash += self.PET_REWARD
             self.link.set_flag("pet_quest", True)
+            self._mark_deed("q_pet")
             self._persist_state(force=True)
             self.inbox.post("Walter", f"You brought {self.PET_NAME} home safe. Here's $"
                             f"{self.PET_REWARD:,}, with my deepest thanks. The whole "
@@ -1452,6 +1531,7 @@ class Game:
             self._guitar_done = True
             self.cash += self.GUITAR_REWARD
             self.link.set_flag("guitar_quest", True)
+            self._mark_deed("q_guitar")
             self._persist_state(force=True)
             self.inbox.post("Río", f"You brought my guitar home. ${self.GUITAR_REWARD:,}, as "
                             "promised — and a song dedicated to you tonight. Thank you.",
@@ -1981,6 +2061,76 @@ class Game:
         pr.draw_rectangle(x - 12, config.WINDOW_HEIGHT - 132, tw + 24, 32, pr.Color(0, 0, 0, 160))
         pr.draw_text(text, x, config.WINDOW_HEIGHT - 126, 20, pr.RAYWHITE)
 
+    # -- CEO Desk (opens the Global AI Terminal) ------------------------------
+    CEO_DESK_REACH = 2.4
+
+    def _near_ceo_desk(self) -> bool:
+        """True when the CEO is at their desk (only in their own office room)."""
+        if not self.scene.show_ceo_desk:
+            return False
+        ceo = self.player.ch
+        dx, dz = self.scene.ceo_desk_pos()
+        return math.hypot(dx - ceo.x, dz - ceo.z) < self.CEO_DESK_REACH
+
+    def _draw_ceo_desk_prompt(self) -> None:
+        text = "Press  E  to use the Global AI Terminal"
+        tw = pr.measure_text(text, 20)
+        x = (config.WINDOW_WIDTH - tw) // 2
+        pr.draw_rectangle(x - 12, config.WINDOW_HEIGHT - 132, tw + 24, 32, pr.Color(0, 0, 0, 160))
+        pr.draw_text(text, x, config.WINDOW_HEIGHT - 126, 20, pr.RAYWHITE)
+
+    def _match_role(self, requested: str) -> str | None:
+        """Map a loosely-named role from the terminal ('engineer', 'designer') to a
+        real roster title ('Software Engineer', 'Product Designer'), or None."""
+        req = (requested or "").strip().lower()
+        if not req:
+            return None
+        titles = [r[0] for r in roster.ROLES]
+        synonyms = {"marketer": "Marketing Lead", "marketing": "Marketing Lead",
+                    "writer": "Blogger", "copywriter": "Blogger", "content": "Blogger",
+                    "developer": "Software Engineer", "programmer": "Software Engineer",
+                    "coder": "Software Engineer", "dev": "Software Engineer",
+                    "designer": "Product Designer", "ops": "Operations Manager"}
+        if synonyms.get(req) in titles:                   # common aliases first
+            return synonyms[req]
+        for t in titles:                                  # exact (case-insensitive)
+            if t.lower() == req:
+                return t
+        for t in titles:                                  # 'engineer' -> 'Software Engineer'
+            if req in t.lower() or t.lower() in req:
+                return t
+        rw, best, bestn = set(req.split()), None, 0       # best word overlap
+        for t in titles:
+            n = len(rw & set(t.lower().split()))
+            if n > bestn:
+                best, bestn = t, n
+        return best
+
+    def _terminal_hire(self, req: dict) -> str:
+        """Confirm + execute a hire the Global AI Terminal proposed. Runs on the main
+        thread, so it uses the real cash/desk state and spawns a real agent. Returns a
+        one-line outcome for the terminal transcript. The budget check lives HERE —
+        the terminal can only ever *propose*."""
+        title = self._match_role((req or {}).get("role", ""))
+        if title is None:
+            return f"'{(req or {}).get('role', '')}' isn't a role I can hire. Nobody hired."
+        for a in self.all_agents:                         # don't double-hire a role
+            if getattr(a, "role", "").lower() == title.lower():
+                return f"You already have a {title} ({a.name}). Nobody new hired."
+        rate = roster.role_rate(title)
+        free = self._free_hire
+        if not self.has_desk_space:
+            return f"No free desks — lease another wing first. {title} not hired."
+        if not free and self.cash < rate:
+            return (f"Not enough cash for a {title}: needs ${rate:,}, you have "
+                    f"${int(self.cash):,}. Nobody hired.")
+        cand = roster.generate(len(self.all_agents), self.used_names)
+        if not self._hire_candidate(cand, title):
+            return f"Hire didn't go through. {title} not hired."
+        spent = "free" if free else f"${rate:,}"
+        return (f"Hired {cand['name']} as {title} ({spent}). "
+                f"Balance ${int(self.cash):,}. Re-send your request and they'll take it.")
+
     # -- portals (move between rooms) -----------------------------------------
     PORTAL_REACH = 2.4
 
@@ -2008,6 +2158,10 @@ class Game:
         self.plan = self.room.plan(self.plans)
         zones.set_active(self.plan)
         self.scene.set_plan(self.plan, seed=self.room.seed)
+        # The CEO Desk lives only in the CEO's own office room (top-floor wing) of
+        # your real office — never in a quest building.
+        self.scene.show_ceo_desk = (self._quest_building is None
+                                    and room_key == self.interior.ceo_office())
         locomotion.set_bounds(*self.plan.bounds())
         self._meeting_active, self._gathered = False, []   # meetings don't span rooms
         self._reception_greeted = False    # re-arm the front-desk hello for this room
@@ -2161,6 +2315,138 @@ class Game:
                         f"Application declined. {verdict.get('feedback', '')}",
                         kind="system", subject="Grant declined", ts=pr.get_time())
                 self.grant_panel.set_result(verdict)
+
+    def _open_business(self, biz) -> None:
+        """Walk-up greeting for a backdrop tenant. The four 'real' landmarks show a
+        live read-out of game state; everything else shows its greeting and, the
+        first time only, pays any one-time reward (persisted so it never repeats)."""
+        if biz.landmark in ("news", "museum", "realty", "library"):
+            self._biz_card = {"name": biz.name, "tag": biz.tag,
+                              "lines": self._landmark_board(biz.landmark),
+                              "perk": 0, "dense": True}
+            self._e_cooldown = 8
+            return
+        paid = biz.id in self._biz_paid
+        lines = biz.card_lines(paid)
+        if biz.perk and not paid:
+            self.cash += biz.perk
+            self._biz_paid.add(biz.id)
+            try:
+                self.link.store.set_setting("biz_paid", json.dumps(sorted(self._biz_paid)))
+            except Exception:
+                pass
+            self.inbox.post(biz.name, f"{biz.perk_line}  (+${biz.perk})",
+                            kind="system", subject=f"{biz.name} — +${biz.perk}", ts=pr.get_time())
+        self._biz_card = {"name": biz.name, "tag": biz.tag, "lines": lines,
+                          "perk": 0 if paid else biz.perk, "dense": False}
+        self._e_cooldown = 8
+
+    def _landmark_board(self, sub: str) -> list[str]:
+        """Live read-out for a 'real' landmark, built from current game state."""
+        if sub == "museum":
+            roster = [a for a in self.link.roster() if getattr(a, "status", "") != "fired"]
+            done, total = len(self.taskboard.done), len(tasks.TASKS)
+            name = (self.company or {}).get("name") or "your company"
+            return [
+                f"The exhibit on {name} so far:",
+                f"  Day {self.calendar.day_number} in business",
+                f"  Cash on hand:   ${int(self.cash):,}",
+                f"  Team hired:     {len(roster)} {'person' if len(roster) == 1 else 'people'}",
+                f"  Offices leased: {len(self.park.leased())}",
+                f"  Funding rounds: {len(self._rounds_raised())}",
+                f"  Milestones:     {done} / {total} done",
+                "“Every wall in here was once an empty lot. Keep building.”",
+            ]
+        if sub == "realty":
+            rows = ["Lots around the city:"]
+            for b in self.park.buildings:
+                if b.status == "hq":
+                    rows.append(f"  {b.name} — Headquarters (home)")
+                elif b.leased:
+                    rows.append(f"  {b.name} — leased  (${b.rent:,}/mo)")
+                elif getattr(b, "locked", False):
+                    rows.append(f"  {b.name} — locked  (meet Mae to open)")
+                else:
+                    rows.append(f"  {b.name} — FOR LEASE  ${b.deposit:,} + ${b.rent:,}/mo")
+            rows.append("“Walk up to any lot and press E to sign — we'll do the paperwork.”")
+            return rows
+        if sub == "news":
+            d = self.calendar.day_number
+            tips = [
+                "“Talk to ten customers before you write ten lines of code.”",
+                "“Runway is oxygen — always know how many months you have left.”",
+                "“Hire slow, fire fast. Your first five hires set the culture.”",
+                "“Revenue cures most problems. Charge sooner than feels comfortable.”",
+                "“Default alive beats default fundable. Get to ramen profitability.”",
+                "“Do things that don't scale — until something finally has to.”",
+            ]
+            return [
+                f"— THE DAILY LEDGER · Day {d} —",
+                "Local founder spotted building an empire downtown.",
+                "",
+                "Founder's tip of the day:",
+                tips[d % len(tips)],
+            ]
+        # library / patent office
+        name = (self.company or {}).get("name") or "your venture"
+        return [
+            "City Library & Patent Office — reference desk.",
+            f"Filed under: {name}.",
+            "",
+            "On the shelf today:",
+            "  • Incorporation & trademark basics — ask the City Registrar.",
+            "  • Pricing & unit economics — the bank runs a clinic on that.",
+            "  • Fundraising decks — Apex Ventures keeps examples.",
+            "“Knowledge is the one asset that never depreciates. Borrow freely.”",
+        ]
+
+    def _draw_business_card(self) -> None:
+        """Centered greeting card for a backdrop business (dismiss with E/Esc)."""
+        card = self._biz_card
+        if not card:
+            return
+        W, H = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+        cw, pad = 620, 22
+        dense = card.get("dense")                    # landmark boards: tight rows, no gaps
+        size = 16 if dense else 18
+        body = card["lines"] + ([f"+${card['perk']} added to your account."] if card["perk"] else [])
+        wrapped: list[tuple[str, int, object]] = []
+        for ln in body:
+            wrapped += [(seg, size, pr.Color(225, 228, 236, 255))
+                        for seg in self._wrap_text(ln, size, cw - 2 * pad)]
+            if not dense:
+                wrapped.append(("", 8, pr.RAYWHITE))     # paragraph gap between lines
+        row_h = 22 if dense else 24
+        ch = pad + 30 + 20 + len(wrapped) * row_h + pad + 22
+        cx, cy = (W - cw) // 2, (H - ch) // 2
+        pr.draw_rectangle(0, 0, W, H, pr.Color(0, 0, 0, 90))            # dim the world
+        pr.draw_rectangle(cx, cy, cw, ch, pr.Color(24, 28, 38, 245))
+        pr.draw_rectangle(cx, cy, cw, 4, pr.Color(255, 196, 96, 255))   # gold header rule
+        pr.draw_text(card["name"], cx + pad, cy + pad, 26, pr.Color(255, 214, 120, 255))
+        pr.draw_text(card["tag"], cx + pad, cy + pad + 32, 15, pr.Color(150, 200, 175, 255))
+        y = cy + pad + 30 + 26
+        for text, tsize, col in wrapped:
+            if text:
+                pr.draw_text(text, cx + pad, y, tsize, col)
+            y += row_h
+        hint = "Press E / Esc to leave"
+        pr.draw_text(hint, cx + cw - pad - pr.measure_text(hint, 14),
+                     cy + ch - 24, 14, pr.Color(150, 156, 168, 255))
+
+    def _wrap_text(self, text: str, size: int, max_w: int) -> list[str]:
+        """Greedy word-wrap to pixel width using raylib's text metrics."""
+        words, lines, cur = text.split(), [], ""
+        for w in words:
+            trial = w if not cur else cur + " " + w
+            if pr.measure_text(trial, size) <= max_w:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines or [""]
 
     def _visit_quest_stop(self, npc) -> None:
         """Talk to a quest building's NPC. Picks its next unfinished to-do (a
@@ -2404,7 +2690,7 @@ class Game:
                   or self.dossier.open or self.investor.open or self.phone.open
                   or self.shop.open or self._bob_talk is not None
                   or self._lady_talk is not None or self._civilian_talk is not None
-                  or self._busker_talk is not None)
+                  or self._busker_talk is not None or self._biz_card is not None)
         # Live to-do guide: re-resolve the chosen to-do's spot each frame so the gold
         # beacon tracks the world; clear it (with a cheer) the moment it's completed.
         guide = self._guide_target_for(self._guide_key) if self._guide_key else None
@@ -2489,6 +2775,22 @@ class Game:
                        and math.hypot(self.busker.x - ceo.x, self.busker.z - ceo.z) <= parkmod.REACH)
         guitar_near = (show_guitar and near is None and near_npc is None
                        and math.hypot(self._guitar_pos[0] - ceo.x, self._guitar_pos[1] - ceo.z) <= parkmod.REACH)
+        # Backdrop tenants: every other building is now a real, walk-up-able business.
+        # It's the LAST fallback — offered only when nothing scripted is in reach, so
+        # E is never stolen from a lease lot, shop, or quest NPC.
+        near_biz = None
+        if (near is None and near_npc is None and not intern_near and not bob_near
+                and not lady_near and not civilian_near and not pet_near
+                and not busker_near and not guitar_near):
+            near_biz = self.park.nearest_business(ceo.x, ceo.z)
+
+        # An open business card swallows the next E/Esc to dismiss itself (the world
+        # is frozen meanwhile, so this is the only interaction that runs).
+        if self._biz_card is not None:
+            if (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_ESCAPE)
+                    or gamepad.pressed(gamepad.TRIANGLE) or gamepad.pressed(gamepad.CIRCLE)):
+                self._biz_card = None
+                self._e_cooldown = 8
 
         if not frozen:
             if pr.is_key_pressed(pr.KEY_P):
@@ -2533,6 +2835,8 @@ class Game:
                 self._talk_to_busker()
             elif guitar_near and press_e:        # found the guitar → carry it back
                 self._find_guitar()
+            elif near_biz is not None and press_e:   # any backdrop shopfront → it talks back
+                self._open_business(near_biz)
 
         pr.begin_drawing()
         pr.clear_background(self.daylight.sky_color())
@@ -2583,7 +2887,7 @@ class Game:
             self.park.draw_guide_beacon(guide[0], guide[1])
         ceo.draw(self.registry)
         pr.end_mode_3d()
-        self._draw_park_overlay(near, near_npc)
+        self._draw_park_overlay(near, near_npc, near_biz)
         if guide is not None:                    # top chip + screen-edge arrow to the spot
             self._draw_guide_hud(guide)
         self._draw_companion_chip()
@@ -2606,6 +2910,7 @@ class Game:
                 self.shop.close()
             elif isinstance(action, tuple) and action[0] == "buy":
                 self.buy_item(action[1])
+        self._draw_business_card()             # backdrop-tenant greeting, on top
         if self.phone.open:                    # Nokia overlay, on top of the city
             self.phone.draw()
         pr.end_drawing()
@@ -2660,9 +2965,19 @@ class Game:
         pr.draw_rectangle(x - 10, 46, w + 20, 26, pr.Color(28, 86, 104, 210))
         pr.draw_text(label, x, 50, 16, pr.Color(190, 235, 245, 255))
 
-    def _draw_park_overlay(self, near, near_npc=None) -> None:
+    def _draw_park_overlay(self, near, near_npc=None, near_biz=None) -> None:
         ceo = self.player.ch
         LABEL_DIST = 32.0     # only name buildings near the CEO (HQ is always shown)
+        # Backdrop tenant you're standing at: name it and prompt, so it reads as a
+        # real place, not a facade. Only the one in reach (never 200 labels at once).
+        if near_biz is not None and self._biz_card is None:
+            paid = near_biz.id in self._biz_paid
+            sub = "Press E: step inside"
+            if near_biz.perk and not paid:
+                sub = "Press E: step inside  ·  ✦"
+            self._label_3d(near_biz.name, sub, pr.Color(150, 215, 235, 255),
+                           near_biz.x, min(self.park.top_of(near_biz), 6.0), near_biz.z, 14,
+                           main_color=pr.Color(232, 224, 205, 255))
         # Lease lots: label when near; HQ always (so you can find your way home).
         for b in self.park.buildings:
             d = math.hypot(b.x - ceo.x, b.z - ceo.z)
@@ -2870,6 +3185,7 @@ class Game:
             # The idle market + farm tick everywhere too — money grows while you roam.
             self.market.update(dt)
             self.farm.update(dt)
+            self._maybe_farm_notice()   # text the CEO when the harvest is worth collecting
             if rent:                    # once per in-game month: checkpoint both
                 self.market.save(self.link)   # (stamps last_seen for offline catch-up)
                 self.farm.save(self.link)
@@ -2915,7 +3231,7 @@ class Game:
             if pr.is_key_pressed(pr.KEY_C) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
                     and not self.grant_panel.open and not self.slot_panel.open \
-                    and not self.farm_panel.open:
+                    and not self.farm_panel.open and not self.terminal.open:
                 self.dossier.toggle()
             # N toggles the Nokia phone from anywhere (office OR city) — press again to
             # close. Skipped while a text field owns the keyboard (incl. the phone's own
@@ -2923,7 +3239,7 @@ class Game:
             if pr.is_key_pressed(pr.KEY_N) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
                     and not self.grant_panel.open and not self.slot_panel.open \
-                    and not self.farm_panel.open \
+                    and not self.farm_panel.open and not self.terminal.open \
                     and not self.phone.capturing and self._quest_input is None:
                 if self.phone.open:
                     self.phone.close()
@@ -2937,6 +3253,9 @@ class Game:
             if self.chat.open:
                 # Chat captures the keyboard; freeze movement/camera/hiring.
                 self.chat.update()
+            elif self.terminal.open:
+                # The Global AI Terminal (CEO Desk) owns the keyboard too.
+                self.terminal.update()
             elif self.phone.open:
                 self.phone.update()
             elif self.meeting.open:
@@ -3000,6 +3319,10 @@ class Game:
                         if not self.dossier.open:       # Files cabinet (your office only)
                             self.dossier.toggle()
                         self._e_cooldown = 4
+                    elif self._near_ceo_desk():         # CEO Desk → the Global AI Terminal
+                        if not self.terminal.open:
+                            self.terminal.open_panel(self.company_name)
+                        self._e_cooldown = 4
                     elif portal is not None:
                         self._use_portal(portal)
 
@@ -3040,6 +3363,8 @@ class Game:
 
             if self.chat.open:
                 self.chat.draw()
+            elif self.terminal.open:
+                self.terminal.draw()
             elif self.phone.open:
                 self.phone.draw()
             elif self.meeting.open:
@@ -3080,6 +3405,8 @@ class Game:
                 portal = self._nearest_portal()
                 if self._near_records():
                     self._draw_records_prompt()
+                elif self._near_ceo_desk():
+                    self._draw_ceo_desk_prompt()
                 elif portal is not None:
                     self._draw_portal_prompt(portal)
                 self._do_dossier_action(self.dossier.draw(self.company))
@@ -3090,6 +3417,7 @@ class Game:
         self.farm.save(self.link)          # checkpoint the farm + last_seen on quit
         self._persist_state(force=True)    # flush cash + leases on quit
         self.chat.voice.shutdown()
+        self.terminal.voice.shutdown()
         self.meeting_link.shutdown()
         self.coordinator.shutdown()
         if self._dispatcher is not None:

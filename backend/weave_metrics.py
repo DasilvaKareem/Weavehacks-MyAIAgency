@@ -111,6 +111,7 @@ def fetch_calls(client, limit: int = 500):
     """Most-recent-first calls with costs, degrading across SDK versions."""
     sort = [{"field": "started_at", "direction": "desc"}]
     for kwargs in (
+        {"limit": limit, "include_costs": True, "include_feedback": True, "sort_by": sort},
         {"limit": limit, "include_costs": True, "sort_by": sort},
         {"limit": limit, "include_costs": True},
         {"limit": limit},
@@ -395,3 +396,145 @@ def render_verdict(v: dict) -> str:
         f"latency {v['latency_x_median']:.1f}x median, errors {v['error_rate']*100:.0f}%.\n"
         f"   Recommended action: {_ACTION_TEXT.get(v['action'], v['action'])}."
     )
+
+
+# --- quality + feedback (the People Analytics layer) ------------------------
+#
+# Online scorers (backend/weave_scorers.py) and the CEO's 👍/👎 both land as
+# Weave *feedback* on the reply call (call.summary.weave.feedback). These
+# extractors read that back so an agent can be ranked by how GOOD and how LIKED
+# it is — not just how cheap. Defensive: feedback shape varies by SDK version.
+
+def _feedback_rows(call) -> list:
+    """The feedback entries attached to a call (scores + reactions), or []."""
+    fb = (_summary(call).get("weave") or {}).get("feedback")
+    try:
+        return list(fb) if fb else []
+    except Exception:
+        return []
+
+
+def _score_value(payload: dict, *fields) -> float | None:
+    """Pull a 0-100 score out of a runnable-scorer feedback payload.
+
+    apply_scorer nests the scorer's return under 'output' (sometimes directly),
+    so we look for the named numeric fields anywhere in the payload tree.
+    """
+    out = payload.get("output", payload) if isinstance(payload, dict) else {}
+    if not isinstance(out, dict):
+        return None
+    for f in fields:
+        v = out.get(f)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
+
+
+def call_quality(call) -> dict:
+    """Per-call quality signal from feedback: {quality, tone, thumbs} (any may be absent)."""
+    out = {"quality": None, "tone": None, "thumbs": 0}
+    for row in _feedback_rows(call):
+        ftype = row.get("feedback_type", "") or ""
+        payload = row.get("payload", {}) or {}
+        if ftype.startswith("wandb.reaction"):
+            emoji = payload.get("detoned") or payload.get("emoji") or ""
+            if emoji == "👍":
+                out["thumbs"] += 1
+            elif emoji == "👎":
+                out["thumbs"] -= 1
+        elif "runnable" in ftype:
+            q = _score_value(payload, "quality")
+            t = _score_value(payload, "tone")
+            if q is not None:
+                out["quality"] = q
+            if t is not None:
+                out["tone"] = t
+    return out
+
+
+def _blend(econ: dict, quality, thumbs_up, thumbs_down) -> float:
+    """A single 0-100 employee score: quality, minus crashes, plus CEO love.
+
+    Quality (the online judge) is the backbone; crashes hurt hard; each net
+    thumbs-up nudges ±. Falls back to a neutral 60 when no judge score exists yet
+    so a brand-new hire isn't ranked last purely for lack of data.
+    """
+    base = quality if quality is not None else 60.0
+    base *= (1.0 - econ.get("error_rate", 0.0))     # a crashing agent isn't "good"
+    base += 3 * (thumbs_up - thumbs_down)           # the CEO's thumb counts
+    return max(0.0, min(100.0, base))
+
+
+def workforce_leaderboard(calls) -> list:
+    """Rank hired employees by a blended quality score from live Weave data.
+
+    Joins each agent's economics (cost/latency/crash) to their online quality
+    scores and the CEO's 👍/👎, returning rows sorted best-first. This is the
+    People Analytics Lead's headline view and what the in-game phone shows.
+    """
+    econ = agent_breakdown(calls)        # cost/latency/crash, keyed by agent_id
+    # accumulate quality + thumbs per agent from chat-reply feedback
+    qual: dict[str, dict] = {}
+    for c in calls:
+        aid = attrs(c).get("agent_id")
+        if not aid:
+            continue
+        cq = call_quality(c)
+        q = qual.setdefault(aid, {"q": [], "t": [], "up": 0, "down": 0,
+                                  "name": attrs(c).get("agent_name"),
+                                  "role": attrs(c).get("role")})
+        if cq["quality"] is not None:
+            q["q"].append(cq["quality"])
+        if cq["tone"] is not None:
+            q["t"].append(cq["tone"])
+        if cq["thumbs"] > 0:
+            q["up"] += cq["thumbs"]
+        elif cq["thumbs"] < 0:
+            q["down"] += -cq["thumbs"]
+
+    rows = []
+    ids = set(econ) | set(qual)
+    for aid in ids:
+        e = econ.get(aid, {})
+        qd = qual.get(aid, {})
+        q_list = qd.get("q", [])
+        t_list = qd.get("t", [])
+        quality = sum(q_list) / len(q_list) if q_list else None
+        tone = sum(t_list) / len(t_list) if t_list else None
+        up, down = qd.get("up", 0), qd.get("down", 0)
+        rows.append({
+            "agent_id": aid,
+            "name": e.get("name") or qd.get("name") or aid,
+            "role": e.get("role") or qd.get("role") or "?",
+            "score": _blend(e, quality, up, down),
+            "quality": quality,
+            "tone": tone,
+            "thumbs_up": up,
+            "thumbs_down": down,
+            "cost_per_call": e.get("cost_per_call", 0.0),
+            "avg_latency": e.get("avg_latency", 0.0),
+            "error_rate": e.get("error_rate", 0.0),
+            "calls": e.get("calls", 0),
+            "replies_scored": len(q_list),
+        })
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    return rows
+
+
+def render_leaderboard(rows: list) -> str:
+    """Text leaderboard for the People Analytics Lead's tool reply."""
+    if not rows:
+        return ("No employee quality data yet — chat with a hired agent (their "
+                "replies get auto-scored), then check again.")
+    lines = ["🏆 AI workforce leaderboard (live quality, from Weave):"]
+    for i, r in enumerate(rows, 1):
+        q = f"{r['quality']:.0f}" if r["quality"] is not None else "—"
+        love = ""
+        if r["thumbs_up"] or r["thumbs_down"]:
+            love = f", CEO {r['thumbs_up']}👍/{r['thumbs_down']}👎"
+        crash = f", {r['error_rate']*100:.0f}% crash" if r["error_rate"] else ""
+        lines.append(
+            f"{i}. {r['name']} ({r['role']}) — score {r['score']:.0f}/100 "
+            f"[quality {q}, {fmt_usd(r['cost_per_call'])}/call{crash}{love}]"
+        )
+    return "\n".join(lines)

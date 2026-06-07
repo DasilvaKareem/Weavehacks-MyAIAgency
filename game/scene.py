@@ -36,6 +36,7 @@ class Scene:
         self.wall_color = WALL_COLOR
         self.door_color = DOOR_COLOR
         self.show_records = True                         # the Company Files cabinet (your office only)
+        self.show_ceo_desk = False                       # the CEO Desk (only in the CEO's office room)
         self.set_plan(plan or floorplan.DEFAULT_HQ)
         self._update_camera_position()
 
@@ -51,6 +52,11 @@ class Scene:
         # the left wall (walk up + E opens the Company Dossier). Same in every room.
         w, d = self._floor
         self._records_pos = (-w / 2 + 0.5, -d * 0.05)
+        # The CEO Desk: a fixed executive desk against the back wall (left of the
+        # door, which sits at +w*0.28), facing +z into the room. Walk up + E opens
+        # the Global AI Terminal. Only drawn when show_ceo_desk is set (the CEO's
+        # own office room — see main._activate_room).
+        self._ceo_desk_pos = (-w * 0.26, -d / 2 + 1.5)
 
     def set_floor_color(self, rgb) -> None:
         self.floor_color = _color(rgb)
@@ -97,6 +103,8 @@ class Scene:
         self._draw_fixtures(d)
         if self.show_records:
             self._draw_records_cabinet(*self._records_pos)
+        if self.show_ceo_desk:
+            self._draw_ceo_desk(*self._ceo_desk_pos)
 
     def _draw_door(self, w: float, d: float, wall_h: float) -> None:
         """A door set into the back wall (slightly proud of it), with a frame and
@@ -175,6 +183,45 @@ class Scene:
     def records_pos(self) -> tuple[float, float]:
         """World (x, z) of the Company Records cabinet (for the walk-up prompt)."""
         return self._records_pos
+
+    def ceo_desk_pos(self) -> tuple[float, float]:
+        """World (x, z) of the CEO Desk (for the walk-up prompt)."""
+        return self._ceo_desk_pos
+
+    def _draw_ceo_desk(self, x: float, z: float) -> None:
+        """The CEO's power desk: a wide dark executive desk with a black glass top,
+        an exec chair behind it, and a glowing green terminal monitor on top — so it
+        reads, from across the room, as 'the computer you run the company from'.
+        The desk faces +z (into the room); the CEO uses it from the front."""
+        wood = pr.Color(58, 44, 34, 255)        # dark mahogany body
+        glass = pr.Color(24, 26, 32, 255)       # smoked glass top
+        trim = pr.Color(210, 175, 90, 255)      # brass trim
+        dw, dd = 2.2, 0.95                       # desk width / depth
+        # Body (modesty panel) + brass kickplate.
+        pr.draw_cube(pr.Vector3(x, 0.37, z), dw, 0.74, dd, wood)
+        pr.draw_cube(pr.Vector3(x, 0.06, z + dd / 2 - 0.02), dw, 0.12, 0.04, trim)
+        # Glass top with a thin brass edge.
+        pr.draw_cube(pr.Vector3(x, 0.76, z), dw + 0.12, 0.06, dd + 0.12, glass)
+        pr.draw_cube_wires(pr.Vector3(x, 0.76, z), dw + 0.12, 0.06, dd + 0.12, trim)
+
+        # Monitor toward the back of the desk, screen facing the CEO (+z).
+        mz = z - 0.22
+        pr.draw_cube(pr.Vector3(x, 0.92, mz), 0.10, 0.16, 0.10, pr.Color(20, 20, 24, 255))  # stand
+        pr.draw_cube(pr.Vector3(x, 1.22, mz), 1.16, 0.66, 0.06, pr.Color(16, 18, 20, 255))  # bezel
+        # Glowing terminal screen (pulses subtly so it clearly reads as "on").
+        pulse = 150 + int(60 * (0.5 + 0.5 * math.sin(pr.get_time() * 2.0)))
+        screen = pr.Color(30, min(255, pulse), 70, 255)
+        pr.draw_cube(pr.Vector3(x, 1.22, mz + 0.035), 1.04, 0.54, 0.02, screen)
+        pr.draw_cube(pr.Vector3(x, 1.22, mz + 0.045), 1.04, 0.54, 0.005,
+                     pr.Color(120, 255, 150, 90))   # phosphor bloom
+        # Keyboard slab on the glass, CEO side.
+        pr.draw_cube(pr.Vector3(x, 0.80, z + 0.18), 0.7, 0.04, 0.24, pr.Color(40, 44, 50, 255))
+
+        # Executive chair behind the desk (back to the wall, seat facing +z).
+        cz = z - 0.7
+        pr.draw_cylinder(pr.Vector3(x, 0.0, cz), 0.06, 0.08, 0.46, 8, pr.Color(30, 32, 38, 255))
+        pr.draw_cube(pr.Vector3(x, 0.50, cz), 0.56, 0.10, 0.52, pr.Color(48, 52, 60, 255))   # seat
+        pr.draw_cube(pr.Vector3(x, 0.86, cz - 0.24), 0.56, 0.72, 0.10, pr.Color(40, 44, 52, 255))  # backrest
 
     def _draw_lounges(self) -> None:
         """A rug + couch at every lounge zone in the active plan (where bots sit

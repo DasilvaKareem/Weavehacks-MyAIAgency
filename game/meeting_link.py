@@ -80,8 +80,10 @@ class MeetingLink:
             except Exception:
                 pass
 
+        # A boardroom call is a conversation, not a 6-turn briefing — give the
+        # back-and-forth headroom so the human has room to interject by voice.
         asyncio.run(run_daily_meeting(
-            topic, max_turns=max_turns, mode=mode,
+            topic, max_turns=max(max_turns, 12), mode=mode, talk_back=True,
             orch=self._orch, cid=self.cid, members=self.members,
             on_room=_on_room))
 

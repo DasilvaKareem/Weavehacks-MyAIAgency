@@ -81,6 +81,18 @@ class BuildingInterior:
         ws = self.wings()
         return ws[0] if ws else self.entry_room
 
+    def ceo_office(self) -> str:
+        """The room that holds the CEO Desk: the wing on the HIGHEST floor (prefer
+        the east wing), so the power desk lives up top. Falls back to the first
+        wing, then the entry room, so every building always has one."""
+        ws = self.wings()
+        if not ws:
+            return self.entry_room
+        top = max(self.rooms[k].level for k in ws)
+        top_wings = [k for k in ws if self.rooms[k].level == top]
+        east = [k for k in top_wings if self.rooms[k].slot == "east"]
+        return (east or top_wings)[0]
+
     def floor_menu(self, plans) -> list:
         """[(level, label, room_key, entry_pos)] for the elevator's floor picker."""
         out = []

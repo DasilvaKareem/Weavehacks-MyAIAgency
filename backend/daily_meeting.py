@@ -76,8 +76,50 @@ def _speech_gate():
     return _Gate()
 
 
+def _ceo_listener(sink):
+    """A FrameProcessor that captures the human's mic audio between VAD
+    start/stop, transcribes it via Gemini ([[backend.stt]]), and hands the text
+    to `sink(text)` — the talk-back path. Transcription runs off the pipeline
+    loop (asyncio.to_thread) so it never stalls audio."""
+    import asyncio
+
+    from pipecat.frames.frames import (
+        InputAudioRawFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
+    )
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from .stt import transcribe_pcm
+
+    class _Listener(FrameProcessor):
+        def __init__(self) -> None:
+            super().__init__()
+            self._buf = bytearray()
+            self._rate = 16_000
+            self._on = False
+
+        async def process_frame(self, frame, direction) -> None:
+            await super().process_frame(frame, direction)
+            if isinstance(frame, VADUserStartedSpeakingFrame):
+                self._on, self._buf = True, bytearray()
+            elif isinstance(frame, InputAudioRawFrame) and self._on:
+                self._buf += bytes(frame.audio)
+                if frame.sample_rate:
+                    self._rate = frame.sample_rate
+            elif isinstance(frame, VADUserStoppedSpeakingFrame) and self._on:
+                self._on = False
+                pcm, rate, self._buf = bytes(self._buf), self._rate, bytearray()
+                if pcm:
+                    text = await asyncio.to_thread(transcribe_pcm, pcm, sample_rate=rate)
+                    if text:
+                        sink(text)
+            await self.push_frame(frame, direction)
+
+    return _Listener()
+
+
 async def run_daily_meeting(topic: str, agent_ids: list[str] | None = None, *,
                             max_turns: int = 6, mode: str = "moderated",
+                            talk_back: bool = True,
                             room_url: str | None = None, token: str | None = None,
                             wait_for_listener: bool = True, listener_timeout: float = 90.0,
                             on_event=None, on_room=None,
@@ -116,18 +158,49 @@ async def run_daily_meeting(topic: str, agent_ids: list[str] | None = None, *,
             except Exception:
                 pass
 
-        transport = DailyTransport(
-            room_url, token, BOT_NAME,
-            params=DailyParams(
-                audio_out_enabled=True,
-                # Gemini emits 24 kHz PCM; match it so no resampling is needed.
-                audio_out_sample_rate=engine.SAMPLE_RATE,
-            ),
-        )
+        # Talk-back: listen to the human's mic (needs Silero VAD to mark turns).
+        # If VAD isn't installed we fall back to broadcast-only rather than fail.
+        listening = talk_back
+        vad_proc = None
+        if listening:
+            try:
+                from pipecat.audio.vad.silero import SileroVADAnalyzer
+                from pipecat.processors.audio.vad_processor import VADProcessor
+                # In Pipecat 1.3 VAD is a pipeline stage (not a transport param):
+                # it turns the mic audio into start/stop-speaking frames.
+                vad_proc = VADProcessor(vad_analyzer=SileroVADAnalyzer())
+            except Exception:
+                listening = False
+
+        dp = dict(audio_out_enabled=True,
+                  # Gemini emits 24 kHz PCM; match it so no resampling is needed.
+                  audio_out_sample_rate=engine.SAMPLE_RATE)
+        if listening:
+            dp["audio_in_enabled"] = True
+        transport = DailyTransport(room_url, token, BOT_NAME, params=DailyParams(**dp))
         tts = GeminiAPITTSService(voice="Kore")
         gate = _speech_gate()
+
+        # The human's transcribed interjections land here; the meeting brain
+        # drains them (see interjections= below) and reacts to each as a CEO turn.
+        import queue as _queue
+        interject_q: _queue.Queue = _queue.Queue()
+
+        def _drain() -> list[str]:
+            out: list[str] = []
+            try:
+                while True:
+                    out.append(interject_q.get_nowait())
+            except _queue.Empty:
+                pass
+            return out
+
+        stages = []
+        if listening:
+            stages += [transport.input(), vad_proc, _ceo_listener(interject_q.put)]
+        stages += [tts, transport.output()]
         worker = PipelineWorker(
-            Pipeline([tts, transport.output()]),
+            Pipeline(stages),
             params=PipelineParams(allow_interruptions=False),
             observers=[gate],
         )
@@ -177,7 +250,7 @@ async def run_daily_meeting(topic: str, agent_ids: list[str] | None = None, *,
             try:
                 result["meeting"] = orch.run_meeting(
                     cid, topic, members, max_turns=max_turns, mode=mode,
-                    on_event=on_turn)
+                    on_event=on_turn, interjections=_drain if listening else None)
             except Exception as exc:  # surface, but always release the runner
                 result["error"] = exc
             finally:

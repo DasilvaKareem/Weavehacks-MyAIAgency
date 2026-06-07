@@ -22,6 +22,7 @@ ROLES = [
     ("Receptionist", "Operations", pr.Color(235, 180, 120, 255)),  # front desk: greets you in the lobby
     ("Recruiter", "People", pr.LIME),
     ("Human Resources Manager", "People", pr.RED),   # manages/evaluates/fires agents
+    ("People Analytics Lead", "People", pr.DARKPURPLE),  # W&B Weave: grades the team on QUALITY (evals/leaderboard/feedback)
     ("Support Specialist", "Operations", pr.SKYBLUE),
     ("DevOps Engineer", "Engineering", pr.RED),      # Opsera-powered: see backend ROLE_PROFILES
     ("Observability Engineer", "Engineering", pr.DARKPURPLE),  # W&B Weave: reads the company's LLM traces
@@ -62,6 +63,7 @@ ROLE_RATES = {
     "Market Analyst": 3_500,
     "Recruiter": 2_500,
     "Human Resources Manager": 3_500,
+    "People Analytics Lead": 3_500,
 }
 
 

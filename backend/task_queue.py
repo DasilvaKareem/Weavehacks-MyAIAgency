@@ -27,8 +27,22 @@ log = logging.getLogger("company.taskq")
 _mem: "collections.deque[str]" = collections.deque()   # offline fallback queue
 _mem_lock = threading.Lock()
 
+# A Redis Stream + consumer group, not a plain list. The difference is reliability:
+# a list LPOP hands a task to a worker and immediately forgets it, so if that worker
+# crashes mid-task the work is lost. A consumer group keeps every claimed task in a
+# Pending Entries List until the worker XACKs it; if the worker dies, another worker
+# reclaims it via XAUTOCLAIM. So tasks survive crashes — exactly what an always-on
+# firehose needs. Falls back to a list, then an in-memory deque, when Redis is off.
+_GROUP = "workers"
+_grp_ready = False
+
 
 def _key() -> str:
+    from .agent_bus import _ns
+    return f"{_ns()}:taskstream"
+
+
+def _list_key() -> str:   # legacy/fallback list, still drained for back-compat
     from .agent_bus import _ns
     return f"{_ns()}:taskq"
 
@@ -38,42 +52,106 @@ def _redis():
     return _r()
 
 
+def _ensure_group(r) -> bool:
+    """Create the stream + consumer group once (idempotent). False if it can't."""
+    global _grp_ready
+    if _grp_ready:
+        return True
+    try:
+        r.xgroup_create(_key(), _GROUP, id="0", mkstream=True)
+    except Exception as exc:
+        if "BUSYGROUP" not in str(exc):   # already exists is fine
+            log.warning("xgroup_create failed (%s)", exc)
+            return False
+    _grp_ready = True
+    return True
+
+
 # --- queue ops --------------------------------------------------------------
 
 def enqueue(text: str, role: str = "") -> str:
-    """Add a task to the back of the queue. Returns immediately with a task id."""
+    """Add a task to the queue. Returns immediately with a task id."""
     tid = uuid.uuid4().hex[:12]
-    item = json.dumps({"id": tid, "text": text, "role": role, "ts": time.time()})
+    payload = json.dumps({"id": tid, "text": text, "role": role, "ts": time.time()})
     r = _redis()
     if r is not None:
         try:
-            r.rpush(_key(), item)
+            r.xadd(_key(), {"payload": payload})
             return tid
         except Exception as exc:
             log.warning("redis enqueue failed (%s); using memory queue", exc)
     with _mem_lock:
-        _mem.append(item)
+        _mem.append(payload)
     return tid
 
 
-def claim() -> dict | None:
-    """Atomically take the next task off the front of the queue, or None if empty."""
+def _parse(msg_id: str, fields: dict) -> dict:
+    task = json.loads(fields.get("payload", "{}"))
+    task["_msgid"] = msg_id    # carried so the worker can XACK after finishing
+    return task
+
+
+def claim(consumer: str = "worker") -> dict | None:
+    """Take the next task, or None if empty. From a Redis Stream consumer group
+    when available — first reclaiming any task abandoned by a dead worker
+    (XAUTOCLAIM), then reading a fresh one — else the fallback list / memory."""
     r = _redis()
-    if r is not None:
+    if r is not None and _ensure_group(r):
         try:
-            v = r.lpop(_key())
-            return json.loads(v) if v else None
+            # 1) Reclaim work a crashed worker left pending for >60s.
+            res = r.execute_command("XAUTOCLAIM", _key(), _GROUP, consumer,
+                                    "60000", "0", "COUNT", "1")
+            claimed = res[1] if len(res) > 1 else []
+            if claimed:
+                mid, fields = claimed[0]
+                if fields:
+                    log.info("reclaimed abandoned task %s", mid)
+                    return _parse(mid, fields)
+                r.xack(_key(), _GROUP, mid)   # tombstone (already deleted) — drop it
+            # 2) Otherwise read a brand-new task.
+            resp = r.xreadgroup(_GROUP, consumer, {_key(): ">"}, count=1)
+            if resp:
+                _, entries = resp[0]
+                if entries:
+                    mid, fields = entries[0]
+                    return _parse(mid, fields)
+            # 3) Drain any leftovers from the legacy list, for back-compat.
+            v = r.lpop(_list_key())
+            if v:
+                return json.loads(v)
+            return None
         except Exception as exc:
             log.warning("redis claim failed (%s); using memory queue", exc)
     with _mem_lock:
         return json.loads(_mem.popleft()) if _mem else None
 
 
+def ack(task: dict | None) -> None:
+    """Confirm a task finished so the group stops tracking it (and trim the stream).
+    No-op for fallback-queue tasks (which carry no _msgid)."""
+    if not task or not task.get("_msgid"):
+        return
+    r = _redis()
+    if r is None:
+        return
+    try:
+        r.xack(_key(), _GROUP, task["_msgid"])
+        r.xdel(_key(), task["_msgid"])        # bound memory — done means gone
+    except Exception as exc:
+        log.warning("ack failed: %s", exc)
+
+
 def pending() -> int:
+    """Tasks not yet acknowledged (new + in-flight), plus any fallback entries."""
     r = _redis()
     if r is not None:
         try:
-            return int(r.llen(_key()))
+            n = int(r.xlen(_key())) if _grp_ready or _ensure_group(r) else 0
+            try:
+                n += int(r.llen(_list_key()))
+            except Exception:
+                pass
+            return n
         except Exception:
             pass
     with _mem_lock:
@@ -98,6 +176,10 @@ class Dispatcher:
         self._active: set = set()
         self._run = False
         self._thread: threading.Thread | None = None
+        # A stable per-process consumer name so XAUTOCLAIM can tell whose pending
+        # entries are whose, and reclaim a dead process's tasks.
+        import socket
+        self.consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
 
     def start(self) -> None:
         if self._run:
@@ -115,7 +197,7 @@ class Dispatcher:
         count. Used by `worker_service --once`."""
         futs = []
         while True:
-            task = claim()
+            task = claim(self.consumer)
             if task is None:
                 break
             futs.append(self._pool.submit(self._do, task))
@@ -126,7 +208,7 @@ class Dispatcher:
         while self._run:
             self._active = {f for f in self._active if not f.done()}
             while len(self._active) < self.max_workers:
-                task = claim()
+                task = claim(self.consumer)
                 if task is None:
                     break
                 self._active.add(self._pool.submit(self._do, task))
@@ -136,13 +218,36 @@ class Dispatcher:
         from .store import AgentStore
         store = self.store or AgentStore()
         agent = self._pick_agent(store, task.get("role", ""))
-        result = self._execute(store, agent, task)
-        if self.on_result:
-            try:
-                self.on_result(task, result, agent)
-            except Exception as exc:  # a bad callback must not kill the worker
-                log.warning("on_result failed: %s", exc)
-        return result
+        try:
+            result = self._execute(store, agent, task)
+            if self.on_result:
+                try:
+                    self.on_result(task, result, agent)
+                except Exception as exc:  # a bad callback must not kill the worker
+                    log.warning("on_result failed: %s", exc)
+            self._remember(agent, task, result)
+            return result
+        finally:
+            # Acknowledge regardless of logical outcome — _execute swallows its own
+            # errors, so a finished _do means this task is handled. (Crash recovery
+            # is for a *dead worker*, not a task that merely failed.)
+            ack(task)
+
+    def _remember(self, agent, task: dict, result: str) -> None:
+        """Persist the task outcome into the team's shared vector memory, so future
+        agents recall what was done. Best-effort and gated — never fatal."""
+        try:
+            from . import agent_memory
+            if not agent_memory.is_configured() or result.startswith("[task failed"):
+                return
+            agent_memory.remember(
+                f"Task: {task.get('text','')}\nOutcome: {result[:600]}",
+                agent_id=(agent.id if agent else ""),
+                agent_name=(agent.name if agent else ""),
+                role=(agent.role if agent else task.get("role", "")),
+                kind="task")
+        except Exception as exc:
+            log.warning("memory write skipped: %s", exc)
 
     def _pick_agent(self, store, role: str):
         """An idle hired agent (matching the role if given), else any active one."""
@@ -186,13 +291,31 @@ class Dispatcher:
             cc = company.context_for(store)
             if cc:
                 system += "\n\n" + cc
+            # Recall relevant team memory and splice it in — the agent acts on what
+            # the company has already learned, not from a cold start. (No-op if off.)
+            text = task.get("text", "")
+            try:
+                from . import agent_memory
+                mem = agent_memory.recall_block(text, k=4)
+                if mem:
+                    system += "\n\n" + mem
+            except Exception:
+                pass
             tools = build_tools_sync(role, aid or None, name)
-            msgs = [("system", system), ("human", task.get("text", ""))]
+            msgs = [("system", system), ("human", text)]
             with tag(agent_id=aid, agent_name=name, role=role, kind="task"):
                 if tools:
                     return run_tool_loop_sync(
                         llm, msgs, tools, max_steps=role_policy.max_steps(role)).strip()
-                return _text(llm.invoke(msgs)).strip()
+                # No-tool single-shot: safe to serve from the semantic cache, and to
+                # populate it. (Tool loops depend on live state, so they're never cached.)
+                from . import semantic_cache
+                cached = semantic_cache.lookup(text, model=model)
+                if cached is not None:
+                    return cached
+                out = _text(llm.invoke(msgs)).strip()
+                semantic_cache.store(text, out, model=model)
+                return out
         except Exception as exc:
             return f"[task failed: {exc}]"
         finally:

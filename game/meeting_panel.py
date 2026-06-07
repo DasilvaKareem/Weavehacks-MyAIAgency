@@ -223,10 +223,10 @@ class MeetingPanel:
         pr.draw_text(title, x + PAD, y + 12, 20, pr.RAYWHITE)
         if self.voice_mode == "daily":
             url = self.link.room_url
-            line = ("📞 live in your browser  ·  " + url) if url else \
+            line = ("🎙️ live in your browser — just speak to join in  ·  " + url) if url else \
                 "📞 starting call — opening your browser…"
             if pr.measure_text(line, 14) > PANEL_W - 2 * PAD:
-                line = line[:88] + "…"
+                line = line[:96] + "…"
             pr.draw_text(line, x + PAD, y + 38, 14, GOOD if url else MUTED)
 
         body_top = y + 58

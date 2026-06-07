@@ -79,7 +79,8 @@ def _fit(text: str, size: int, max_w: int) -> str:
 
 class PhonePanel:
     def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None,
-                 hire=None, follow=None, citymap=None, clock=None, guide=None) -> None:
+                 hire=None, follow=None, citymap=None, clock=None, guide=None,
+                 locate=None) -> None:
         self.link = link                  # CompanyLink (agent 1:1 chat)
         self.coord = coordinator          # CoordinatorLink (co-founder)
         self._contacts = contacts_getter  # () -> list[Character]
@@ -90,6 +91,7 @@ class PhonePanel:
         self.citymap = citymap            # city-map bridge (here/bounds/markers), optional
         self.clock = clock                # clock bridge (state() -> date+time dict), optional
         self.guide = guide                # to-do guide bridge (start(key) -> (ok, msg)), optional
+        self.locate = locate              # (agent) -> short "where they sit" label, optional
         self._todo_flash = ""             # transient note on the To-Do screen (e.g. why no guide)
         self._map_sel = 0                 # selected POI index on the MAP screen
         self._cand = None                 # the auto-generated candidate awaiting a role
@@ -1088,7 +1090,10 @@ class PhonePanel:
         start, ys, rh, _, _ = self._list_view(len(people))
         for i, ry in enumerate(ys):
             p = people[start + i]
-            self._draw_row(lx, ry, lw, rh, p.name, p.role, (start + i) == self.sel)
+            # Right hint shows where they sit (their wing) so you can find them;
+            # falls back to their role if no location bridge is wired.
+            where = self.locate(p) if self.locate else ""
+            self._draw_row(lx, ry, lw, rh, p.name, where or p.role, (start + i) == self.sel)
 
     def _draw_todo(self, lx, ly, lw, lh) -> None:
         if self.board is None:
@@ -1186,10 +1191,12 @@ class PhonePanel:
         who = (c.get("name", "") or "").split(" ")[0] or "—"
         self._draw_status_strip(lx, ly, lw, f"Role for {_short(who, 12)}")
         cash = self.hire.cash() if self.hire else 0
+        free = bool(self.hire and getattr(self.hire, "free_hire", lambda: False)())
         cashlbl = f"${cash:,}"
         cw = pr.measure_text(cashlbl, 12)
         pr.draw_text(cashlbl, lx + lw - cw - 8, ly + 24, 12, INK_DIM)
-        pr.draw_text("Pick a role:", lx + 8, ly + 24, 13, INK_DIM)
+        pr.draw_text("Pick a role — 1st FREE!" if free else "Pick a role:",
+                     lx + 8, ly + 24, 13, INK)
         if self._hire_flash:
             pr.draw_text(_short(self._hire_flash, 30), lx + 6, ly + lh - 16, 12, INK)
         rows = self._role_rows()
@@ -1205,7 +1212,7 @@ class PhonePanel:
                 pr.draw_rectangle(lx + 2, ry - 2, lw - 4, rh, HILITE)
             fg = LCD_BG if selected else INK
             dim = LCD_BG if selected else INK_DIM
-            tag = f"${rate:,}"
+            tag = "FREE" if free else f"${rate:,}"
             tw = pr.measure_text(tag, 12)
             pr.draw_text(_fit(text, 14, lw - tw - 30), lx + 16, ry, 14, fg)
             pr.draw_text(tag, lx + lw - tw - 8, ry + 1, 12, dim)

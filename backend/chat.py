@@ -18,7 +18,7 @@ from .config import GEMINI_MODEL, role_profile
 from .llm import get_llm
 from . import role_policy
 from .mcp_bridge import run_tool_loop_sync
-from .observability import tag, traced
+from .observability import tag, traced, call_op, score_call
 from .persona import generate as make_persona, render_prompt as render_persona
 from .store import AgentStore
 from .tool_builder import build_tools_sync
@@ -69,6 +69,9 @@ class AgentChat:
             raise ValueError(f"No active agent with id {agent_id!r}")
         self.agent = agent
         self.llm = get_llm(model=agent.model or GEMINI_MODEL)
+        # The Weave call of this agent's most recent reply, so the CEO's 👍/👎
+        # (CompanyLink.react) can attach feedback to the exact traced reply.
+        self.last_call = None
 
     def send(self, message: str, persist_user: bool = True,
              on_step=None, on_token=None) -> str:
@@ -137,10 +140,16 @@ class AgentChat:
         pol_steps = role_policy.max_steps(self.agent.role)
         # Tag this turn with the hired agent's identity so its real traces are
         # attributed to THEM in Weave — the data HR reads to fire/repurpose.
+        self.last_call = None
         with tag(agent_id=self.agent.id, agent_name=self.agent.name,
                  role=self.agent.role, kind="chat"):
             try:
-                reply = chat_attempt(llm, msgs, tools, on_step, _emit, max_steps=pol_steps)
+                # call_op surfaces the Weave call of this reply so we can score it
+                # online and let the CEO 👍/👎 it (no-op shape when weave is off).
+                reply, call = call_op(chat_attempt, llm, msgs, tools, on_step,
+                                      _emit, max_steps=pol_steps)
+                self.last_call = call
+                score_call(call)  # background reply-quality + tone scoring
             except Exception:
                 partial = "".join(collected).strip()
                 if not partial:

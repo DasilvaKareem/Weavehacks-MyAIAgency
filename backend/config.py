@@ -329,6 +329,30 @@ ROLE_PROFILES = {
             "describe a video in words when you can actually produce it."
         ),
     },
+    # The People Analytics Lead: the HR-side counterpart to the Observability
+    # Engineer. Where "observ" reads COST, "people" reads QUALITY — it runs the
+    # Weave benchmark/leaderboard and reads each employee's live quality scores
+    # and the CEO's 👍/👎. Gets BOTH the cost tools (weave) and the people tools.
+    # "people" matches "People Analytics Lead"/"People Ops" and no other title.
+    "people": {
+        "servers": [],
+        "weave": True,
+        "people": True,
+        "blurb": (
+            "You are the company's People Analytics Lead, powered by Weights & "
+            "Biases Weave. You grade the AI workforce on QUALITY, not just cost. "
+            "Your tools read live Weave data: workforce_leaderboard (rank every "
+            "employee by a blended quality score from their online reply scores, "
+            "the CEO's 👍/👎, and crash rate), agent_report_card (one person's full "
+            "quality/feedback/cost/latency card), quality_pulse (a company-wide "
+            "health check), and run_benchmark (run the offline role benchmark and "
+            "publish a head-to-head Leaderboard to W&B). You ALSO have the cost "
+            "tools (agent_economics, llm_spend_report). When the CEO asks who's "
+            "best/worst, who to promote/coach, or to 'benchmark the team', call "
+            "these and report concrete numbers from the real traces — never guess. "
+            "If nothing comes back, say agents need to do some traced work first."
+        ),
+    },
     # "observ" is checked BEFORE "engineer" so "Observability Engineer" routes to
     # Weave (reading the company's own LLM traces), not the Daytona code sandbox.
     # "observ" is a substring of "Observability"; no other role title contains it.
@@ -451,6 +475,12 @@ def role_uses_weave(role: str) -> bool:
     """True if this role reads the company's Weave traces (Observability Engineer)."""
     prof = _match_profile(role)
     return bool(prof and prof.get("weave"))
+
+
+def role_uses_people(role: str) -> bool:
+    """True if this role grades the workforce on quality (People Analytics Lead)."""
+    prof = _match_profile(role)
+    return bool(prof and prof.get("people"))
 
 
 def role_uses_image_gen(role: str) -> bool:

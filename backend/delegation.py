@@ -48,7 +48,14 @@ def run_agent_once(role: str, subtask: str, requester: str = "") -> str:
     system = (
         f"You are a {role} at an AI company. A teammate ({requester or 'a colleague'}) "
         f"has delegated a specific subtask to you. Do it using your tools, then reply "
-        f"with ONLY the concrete result they need — tight, no preamble."
+        f"with ONLY the concrete result they need — tight, no preamble.\n"
+        f"CRITICAL HONESTY: report only what your tools actually returned. NEVER "
+        f"invent a URL, deployment link, file path, or id. If the CEO wants a live "
+        f"URL for a site, build it and call serve_site to get a real Daytona preview "
+        f"link, and return that EXACT url (publish_site/Vercel may not be connected — "
+        f"don't fake a vercel.app link). If a tool failed or isn't connected, report "
+        f"that failure verbatim instead of fabricating a success. A result you didn't "
+        f"actually produce with a tool does not exist — say so."
     )
     system += "\n\n" + render_persona(make_persona(role, role))
     prof = config.role_profile(role)

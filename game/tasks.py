@@ -36,6 +36,9 @@ class Task:
     ask: str | None = None         # prompt shown in the input box
     field: str | None = None       # profile key the answer is saved under
     reward: int = 0                # seed cash granted on completion
+    # Optional side-quests (Good Deeds): they show in the To-Do list and are
+    # guideable, but don't count toward the main quest line or the win condition.
+    optional: bool = False
 
     @property
     def manual(self) -> bool:
@@ -59,21 +62,21 @@ def _team(n: int) -> Callable[[dict], bool]:
 TASKS: list[Task] = [
     # --- Chapter 1: The Idea -------------------------------------------------
     Task("name",        "The Idea", "Name your company",        "Every empire needs a name.",
-         ask="What's the company called?", field="company_name", reward=500),
+         ask="What's the company called?", field="company_name", reward=1000),
     Task("pitch",       "The Idea", "Write your one-line pitch", "What do you do, in a sentence?",
-         ask="Pitch it in one line", field="pitch", reward=500),
+         ask="Pitch it in one line", field="pitch", reward=1000),
     Task("customer",    "The Idea", "Name your target customer", "Who is this actually for?",
-         ask="Who's your customer?", field="customer", reward=500),
+         ask="Who's your customer?", field="customer", reward=1000),
     Task("competitors", "The Idea", "Size up the competition",   "Note who you're up against.",
-         ask="Who are your main competitors?", field="competitors", reward=750),
+         ask="Who are your main competitors?", field="competitors", reward=1500),
     # field is "business_model" (NOT "model" — that key is the CEO's avatar gltf in
     # the appearance profile; reusing it would swap the player's character model).
     Task("model",       "The Idea", "Sketch your business model", "How does this make money?",
-         ask="How does it make money?", field="business_model", reward=750),
+         ask="How does it make money?", field="business_model", reward=1500),
     Task("cofounder",   "The Idea", "Win over co-founder Robin",  "Buy Robin a coffee and pitch them.",
-         ask="Why should Robin bet on you?", field="cofounder_pitch", reward=2000),
+         ask="Why should Robin bet on you?", field="cofounder_pitch", reward=4000),
     Task("seed",        "The Idea", "Raise your seed money",       "Pitch an angel investor for a first check.",
-         ask="Pitch your idea — why fund it?", field="seed_pitch", reward=5000),
+         ask="Pitch your idea — why fund it?", field="seed_pitch", reward=10000),
 
     # --- Around Town: chat with the locals for tips + a little cash ----------
     Task("city_tour",     "Around Town", "Get to know the city",   "Visit Fresh Market and chat with the city guide.",),
@@ -88,19 +91,19 @@ TASKS: list[Task] = [
     # The canvas's nine blocks; customer segments (customer) and revenue streams
     # (business_model/pricing) are covered above, so these are the other seven.
     Task("value_prop",     "Business Model Canvas", "Define your value proposition", "The core promise to customers.",
-         ask="What's your core value proposition?", field="value_prop", reward=500),
+         ask="What's your core value proposition?", field="value_prop", reward=1000),
     Task("channels",       "Business Model Canvas", "Map your channels",            "How you reach and deliver to customers.",
-         ask="How do you reach customers?", field="channels", reward=400),
+         ask="How do you reach customers?", field="channels", reward=800),
     Task("relationships",  "Business Model Canvas", "Plan customer relationships",  "How you win, keep, and grow customers.",
-         ask="How do you keep customers?", field="relationships", reward=400),
+         ask="How do you keep customers?", field="relationships", reward=800),
     Task("key_resources",  "Business Model Canvas", "List your key resources",      "What you must have to deliver.",
-         ask="What key resources do you need?", field="key_resources", reward=400),
+         ask="What key resources do you need?", field="key_resources", reward=800),
     Task("key_activities", "Business Model Canvas", "Name your key activities",     "The most important things you do.",
-         ask="What are your key activities?", field="key_activities", reward=400),
+         ask="What are your key activities?", field="key_activities", reward=800),
     Task("partnerships",   "Business Model Canvas", "Line up key partners",         "Who you rely on to make it work.",
-         ask="Who are your key partners?", field="partnerships", reward=400),
+         ask="Who are your key partners?", field="partnerships", reward=800),
     Task("cost_structure", "Business Model Canvas", "Map your cost structure",      "What it costs to run the business.",
-         ask="What are your biggest costs?", field="cost_structure", reward=500),
+         ask="What are your biggest costs?", field="cost_structure", reward=1000),
 
     # --- Chapter 2: Set Up Shop ---------------------------------------------
     Task("office",      "Set Up Shop", "Lease your first office", "Walk up to a building and lease it.",
@@ -109,13 +112,13 @@ TASKS: list[Task] = [
     Task("engineer",    "Set Up Shop", "Hire your first engineer", "Someone has to build it.",
          auto=_has_role("Engineer")),
     Task("logo",        "Set Up Shop", "Design a logo",            "Give a Designer the brief.",
-         ask="Describe the logo you want", field="logo", reward=600),
+         ask="Describe the logo you want", field="logo", reward=1200),
     Task("domain",      "Set Up Shop", "Register a domain",        "Stake your claim on the web.",
-         ask="What domain do you want?", field="domain", reward=600),
+         ask="What domain do you want?", field="domain", reward=1200),
     Task("website",     "Set Up Shop", "Launch your website",      "Publish a real site (Engineer/Blogger).",
          auto=lambda s: s.get("website", False)),
     Task("brand",       "Set Up Shop", "Choose your brand colors", "Make it look like you.",
-         ask="Describe your brand & colors", field="brand", reward=600),
+         ask="Describe your brand & colors", field="brand", reward=1200),
 
     # --- Chapter 3: Build the Product ---------------------------------------
     Task("mvp",         "Build the Product", "Ship the MVP",          "The smallest thing worth shipping."),
@@ -147,7 +150,7 @@ TASKS: list[Task] = [
          auto=_has_role("Analyst")),
     Task("dashboard",   "Scale Up", "Build a metrics dashboard", "One screen, the whole company."),
     Task("pricing",     "Scale Up", "Set your pricing",         "Decide what you're worth.",
-         ask="How do you price it?", field="pricing", reward=500),
+         ask="How do you price it?", field="pricing", reward=1000),
     Task("revenue",     "Scale Up", "Make your first revenue",  "The first dollar is the hardest."),
 
     # --- Chapter 6: Build a Company -----------------------------------------
@@ -166,6 +169,14 @@ TASKS: list[Task] = [
          auto=_leased("finance")),
     Task("profitable",  "Build a Company", "Turn profitable",        "More in than out."),
     Task("series_a",    "Build a Company", "Raise a Series A",       "The big leagues. You win."),
+
+    # --- Good Deeds (optional side-quests; help locals for a cash reward) -----
+    # These complete from the world (talk to an NPC in a park), never auto, and
+    # don't gate the win. The To-Do screen's "Guide" walks you to the next step.
+    Task("q_bob",     "Good Deeds", "Catch up with Bob",        "Your old friend's in the city — go say hi.", optional=True),
+    Task("q_starter", "Good Deeds", "Meet Mae about a cheap office", "She runs the small-business desk in a park.", optional=True),
+    Task("q_pet",     "Good Deeds", "Help Walter find Biscuit", "A neighbor's pug ran off — bring him home for $2,500.", optional=True),
+    Task("q_guitar",  "Good Deeds", "Recover Río's guitar",     "A busker's guitar was stolen — get it back for $2,500.", optional=True),
 ]
 
 # chapter -> tasks, in order (for the quest log's grouped display)
@@ -192,17 +203,21 @@ class TaskBoard:
         return key in self.done
 
     def current(self) -> Task | None:
-        """The first not-yet-done task — the active objective."""
+        """The first not-yet-done MAIN task — the active objective (optional
+        Good-Deed side-quests are never the main objective)."""
         for t in TASKS:
-            if t.key not in self.done:
+            if not t.optional and t.key not in self.done:
                 return t
         return None
 
     def progress(self) -> tuple[int, int]:
-        return (len(self.done), len(TASKS))
+        """Main-quest progress only; optional side-quests don't move the count."""
+        main = [t for t in TASKS if not t.optional]
+        done = sum(1 for t in main if t.key in self.done)
+        return (done, len(main))
 
     def beaten(self) -> bool:
-        return len(self.done) >= len(TASKS)
+        return self.current() is None
 
     # -- mutation -----------------------------------------------------------
     def complete(self, key: str) -> bool:

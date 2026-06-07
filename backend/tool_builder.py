@@ -15,6 +15,7 @@ from .designer_tools import load_designer_tools
 from .exec_tools import load_exec_tools
 from .hr_tools import load_hr_tools
 from .mcp_bridge import load_tools, load_tools_sync
+from .people_tools import load_people_tools
 from .publish_tools import load_publish_tools
 from .weave_tools import load_weave_tools
 
@@ -33,6 +34,8 @@ def _local_tools(role: str, agent_id: str | None, agent_name: str) -> list:
         tools += load_daytona_tools(agent_id, agent_name)
     if config.role_uses_weave(role):
         tools += load_weave_tools(agent_id, agent_name)
+    if config.role_uses_people(role):
+        tools += load_people_tools(agent_id, agent_name)
     if config.role_uses_image_gen(role):
         tools += load_designer_tools(agent_id, agent_name)
     if config.role_uses_video_gen(role):

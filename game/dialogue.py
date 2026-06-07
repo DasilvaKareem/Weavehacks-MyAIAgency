@@ -32,17 +32,23 @@ class Line:
 @dataclass(frozen=True)
 class Beat:
     lines: tuple[Line, ...]
+    done: tuple[Line, ...] = ()   # optional lines played when the to-do is already done
 
 
-def _beat(raw: dict) -> Beat:
-    default_who = raw.get("who", "") or ""
+def _parse_lines(raw_lines, default_who: str) -> tuple[Line, ...]:
     out: list[Line] = []
-    for ln in raw.get("lines", []):
+    for ln in raw_lines or []:
         if isinstance(ln, str):
             out.append(Line(default_who, ln))
         else:
             out.append(Line(ln.get("who", default_who) or default_who, ln["text"]))
-    return Beat(tuple(out))
+    return tuple(out)
+
+
+def _beat(raw: dict) -> Beat:
+    default_who = raw.get("who", "") or ""
+    return Beat(_parse_lines(raw.get("lines", []), default_who),
+                _parse_lines(raw.get("done", []), default_who))
 
 
 def load(path: str = PATH) -> dict[str, Beat]:
@@ -55,9 +61,13 @@ def load(path: str = PATH) -> dict[str, Beat]:
     return {k: _beat(v) for k, v in data.items() if isinstance(v, dict)}
 
 
-def lines_for(beats: dict[str, Beat], key: str) -> tuple[Line, ...]:
-    """The lines for a beat, or a single generic fallback line."""
+def lines_for(beats: dict[str, Beat], key: str, done: bool = False) -> tuple[Line, ...]:
+    """The lines for a beat, or a single generic fallback line. When `done` is set
+    (a revisit to a finished stop) the beat's `done` lines are used if it has any,
+    else it falls back to the normal lines."""
     beat = beats.get(key)
+    if beat and done and beat.done:
+        return beat.done
     if beat and beat.lines:
         return beat.lines
     return (Line("", FALLBACK),)

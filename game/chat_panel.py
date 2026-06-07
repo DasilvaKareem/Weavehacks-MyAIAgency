@@ -354,6 +354,18 @@ class ChatPanel:
         if self.waiting or self.voice.recording or self.voice.transcribing:
             return                          # ignore typing while busy
 
+        # CEO rates the agent's last reply → logged as Weave feedback on that exact
+        # call, so the People Analytics Lead can rank agents by how the CEO actually
+        # likes them. F-keys, so they never land in the text box.
+        if pr.is_key_pressed(pr.KEY_F1):
+            self._status = ("👍 logged — People Analytics will see it"
+                            if self.link.react(self.agent.backend_id, True)
+                            else "nothing to rate yet")
+        elif pr.is_key_pressed(pr.KEY_F2):
+            self._status = ("👎 logged — People Analytics will see it"
+                            if self.link.react(self.agent.backend_id, False)
+                            else "nothing to rate yet")
+
         ch = pr.get_char_pressed()
         while ch > 0:
             if 32 <= ch < 127 and len(self.input) < MAX_INPUT:
@@ -530,7 +542,7 @@ class ChatPanel:
             pr.draw_text("> " + self.input + caret, x + PAD + 8, input_y + 6, FONT, pr.RAYWHITE)
 
         talk = "Hold R2 / Ctrl to talk" if voice.available() else "(mic unavailable)"
-        hint = f"Enter send   ·   {talk}   ·   Esc / ○ / ✕  close"
+        hint = f"Enter send   ·   {talk}   ·   F1 👍 / F2 👎   ·   Esc / ○ / ✕  close"
         pr.draw_text(hint, x + PAD, y + PANEL_H - 12, 14, pr.LIGHTGRAY)
 
         self._draw_preview(x, y)

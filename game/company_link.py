@@ -17,6 +17,8 @@ import queue
 
 from backend.store import AgentRow, AgentStore, Message
 from backend.chat import AgentChat
+from backend.ceo_terminal import CompanyTerminal, TERMINAL_ID
+from backend.ceo_terminal import HISTORY_KEY as TERMINAL_HISTORY_KEY
 from backend.planner import plan_policy
 from backend import composio_tools
 
@@ -26,6 +28,7 @@ CEO_PROFILE_KEY = "ceo_profile"
 TASKS_KEY = "task_progress"
 # The idle-market state (asset prices, holdings, savings, last-seen), a JSON blob.
 MARKET_KEY = "market_state"
+FARM_KEY = "farm_state"
 # Outfit ids the player has purchased (premium models + suit styles), a JSON list.
 # Once an id is here the outfit is reusable for free on any CEO/agent.
 UNLOCKS_KEY = "unlocked_outfits"
@@ -134,6 +137,20 @@ class CompanyLink:
         """Persist the idle-market state so it grows while you're away."""
         self.store.set_setting(MARKET_KEY, json.dumps(state))
 
+    def load_farm(self) -> dict | None:
+        """The saved idle-farm state (crop counts + accrued pot), or None."""
+        raw = self.store.get_setting(FARM_KEY)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
+    def save_farm(self, state: dict) -> None:
+        """Persist the idle-farm state so it harvests while you're away."""
+        self.store.set_setting(FARM_KEY, json.dumps(state))
+
     def load_cash(self) -> int | None:
         """The player's saved cash, or None on a fresh save (use STARTING_CASH)."""
         raw = self.store.get_setting(CASH_KEY)
@@ -196,6 +213,7 @@ class CompanyLink:
         self.store.set_setting(CASH_KEY, "")
         self.store.set_setting(LEASES_KEY, "")
         self.store.set_setting(CALENDAR_KEY, "")
+        self.store.set_setting(TERMINAL_HISTORY_KEY, "")    # wipe the AI terminal transcript too
 
     def load_unlocks(self) -> set[str]:
         """The set of purchased outfit ids (empty on a fresh save)."""
@@ -243,6 +261,48 @@ class CompanyLink:
     def is_busy(self, agent_id: str) -> bool:
         fut = self._pending.get(agent_id)
         return fut is not None and not fut.done()
+
+    def react(self, agent_id: str, thumbs_up: bool = True) -> bool:
+        """Attach the CEO's 👍/👎 to this agent's most recent traced reply.
+
+        Lands as Weave feedback on the exact reply call, so the People Analytics
+        Lead can rank agents by how the CEO actually rates them — not just by
+        cost. No-op (False) when there's no traced reply yet or Weave is off.
+        """
+        chat = self._chats.get(agent_id)
+        if chat is None:
+            return False
+        from backend.observability import react as _react
+
+        return _react(getattr(chat, "last_call", None), "👍" if thumbs_up else "👎")
+
+    def refresh_leaderboard(self) -> None:
+        """Kick a background refresh of the live quality leaderboard (cached)."""
+        fut = getattr(self, "_lb_pending", None)
+        if fut is not None and not fut.done():
+            return
+
+        def _job():
+            from backend.observability import init_weave
+            from backend import weave_metrics as wm
+
+            client = init_weave()
+            if client is None:
+                return []
+            return wm.workforce_leaderboard(wm.fetch_calls(client, 300))
+
+        self._lb_pending = self._composio_pool.submit(_job)
+
+    def poll_leaderboard(self) -> list:
+        """Latest cached leaderboard rows (best-first); refreshes opportunistically."""
+        fut = getattr(self, "_lb_pending", None)
+        if fut is not None and fut.done():
+            self._lb_pending = None
+            try:
+                self._lb_cache = fut.result() or []
+            except Exception:
+                pass
+        return list(getattr(self, "_lb_cache", []))
 
     def send(self, agent_id: str, text: str) -> bool:
         """Schedule a message on a worker thread. False if one is still pending.
@@ -313,6 +373,58 @@ class CompanyLink:
             except queue.Empty:
                 break
         return out
+
+    # --- global AI terminal (the CEO Desk) --------------------------------
+    # The terminal isn't a roster agent, so it can't live in _chat()/the
+    # messages table. It reuses the SAME non-blocking plumbing as 1:1 chat
+    # (_pending/_steps/_tokens + poll_reply/poll_tokens/poll_steps), just keyed
+    # by the fixed TERMINAL_ID, with its transcript kept in settings instead.
+
+    def _terminal(self) -> CompanyTerminal:
+        term = self._chats.get(TERMINAL_ID)
+        if not isinstance(term, CompanyTerminal):
+            term = CompanyTerminal(self.store)
+            self._chats[TERMINAL_ID] = term
+        return term
+
+    def terminal_history(self) -> list[Message]:
+        """The terminal transcript (Message-like rows with .role/.content)."""
+        return self._terminal().history()
+
+    def terminal_append(self, role: str, content: str) -> None:
+        """Append a line to the terminal transcript without a model turn (used by the
+        game to post a hire result once the CEO confirms)."""
+        self._terminal().append(role, content)
+
+    def poll_terminal_hire(self):
+        """A hire the terminal's hire_agent tool proposed, awaiting CEO confirm (or
+        None). The game shows a Y/N prompt and checks the budget before hiring."""
+        return self._terminal().pending_hire
+
+    def clear_terminal_hire(self) -> None:
+        """Drop the pending hire proposal (CEO confirmed or cancelled it)."""
+        self._terminal().pending_hire = None
+
+    def terminal_send(self, text: str) -> bool:
+        """Schedule a terminal turn on a worker thread. False if one's pending.
+
+        The CEO's line is persisted synchronously here (so the panel can echo it
+        immediately and it's durable before the possibly-minutes-long run), then
+        the worker streams steps/tokens exactly like a 1:1 chat.
+        """
+        if self.is_busy(TERMINAL_ID):
+            return False
+        term = self._terminal()
+        term.persist_user(text)
+        steps: queue.Queue = queue.Queue()
+        tokens: queue.Queue = queue.Queue()
+        self._steps[TERMINAL_ID] = steps
+        self._tokens[TERMINAL_ID] = tokens
+        self._pending[TERMINAL_ID] = self._pool.submit(
+            term.send, text, persist_user=False,
+            on_step=steps.put, on_token=tokens.put,
+        )
+        return True
 
     # --- movement-policy planning (non-blocking) --------------------------
 

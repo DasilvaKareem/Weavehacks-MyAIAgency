@@ -19,10 +19,14 @@ MODEL = os.getenv("COMPANY_AI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 
-# A curated, varied subset of Gemini's prebuilt voices (timbre/energy spread).
+# The full set of Gemini prebuilt TTS voices (30) — the wider the pool, the
+# longer distinct employees go before any two share a voice. Assigned by id hash.
 GEMINI_VOICES = [
-    "Kore", "Puck", "Charon", "Fenrir", "Aoede", "Leda",
-    "Orus", "Zephyr", "Callirrhoe", "Enceladus", "Iapetus", "Umbriel",
+    "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda",
+    "Orus", "Aoede", "Callirrhoe", "Autonoe", "Enceladus", "Iapetus",
+    "Umbriel", "Algieba", "Despina", "Erinome", "Algenib", "Rasalgethi",
+    "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima",
+    "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
 ]
 
 _client = None
@@ -64,11 +68,11 @@ def synth_pcm(text: str, voice: str = "Kore", model: str | None = None) -> bytes
     return resp.candidates[0].content.parts[0].inline_data.data
 
 
-def pcm_to_wav(pcm: bytes) -> bytes:
+def pcm_to_wav(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(CHANNELS)
         w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
+        w.setframerate(sample_rate)
         w.writeframes(pcm)
     return buf.getvalue()

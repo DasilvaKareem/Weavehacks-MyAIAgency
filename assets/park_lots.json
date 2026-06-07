@@ -1,58 +1,594 @@
 {
-  "_comment": "Office park lots. col(0..2)/row(0..1) place the building on the plaza grid; deposit is paid once to lease, rent is charged per in-game month. HQ starts leased. `dept` themes the building (color); `plan` is the floor-plan template (assets/floor_plans.json) used for its interior.",
-  "lots": [
-    { "id": "hq",       "name": "Headquarters",     "dept": "Executive",   "col": 1, "row": 1, "model": "3Story_Small.glb",        "deposit": 3500, "rent": 400, "color": [96, 112, 150], "status": "available", "plan": "hq" },
-    { "id": "eng",      "name": "Engineering Wing", "dept": "Engineering", "col": 0, "row": 0, "model": "4Story.glb",               "deposit": 2500, "rent": 300, "color": [70, 130, 175], "status": "available", "plan": "tower",
-      "structure": { "floors": [
-        { "hub": "lobby", "reception": true },
-        { "hub": "elev_lobby", "wings": { "east": "tower", "west": "studio" } },
-        { "hub": "elev_lobby", "wings": { "east": "hq" } }
-      ] } },
-    { "id": "research", "name": "Research Labs",    "dept": "Research",     "col": 1, "row": 0, "model": "3Story_Small.glb",         "deposit": 2800, "rent": 320, "color": [120, 100, 185], "status": "available", "plan": "studio" },
-    { "id": "design",   "name": "Design Studio",    "dept": "Design",      "col": 2, "row": 0, "model": "2Story_Balcony.glb",       "deposit": 2200, "rent": 260, "color": [180, 92, 150], "status": "available", "plan": "studio" },
-    { "id": "growth",   "name": "Growth Loft",      "dept": "Growth",      "col": 0, "row": 1, "model": "2Story.glb",               "deposit": 2000, "rent": 240, "color": [205, 140, 60], "status": "available", "plan": "hq" },
-    { "id": "finance",  "name": "Finance Tower",    "dept": "Finance",     "col": 2, "row": 1, "model": "6Story_Stack.glb",         "deposit": 3000, "rent": 360, "color": [80, 155, 105], "status": "available", "plan": "tower" }
-  ],
-
-  "_npc_comment": "Non-leasable flavor buildings around the plaza. `sign` is a GLB word-sign in glb/signs (or null for a plain awning + label). `x`,`z` are world coords; all face +z. `awning` tints the door canopy. A `task` makes the building a QUEST STOP: walk up + press E to complete that to-do (tasks.py key), pay `reward` seed cash once, and post `blurb` to the inbox.",
-  "npc": [
-    { "id": "chamber",    "name": "Chamber of Commerce", "model": "2Story_Columns.glb", "sign": null, "x": -4,  "z": -4,  "awning": [120, 150, 200], "task": "customer",    "reward": 800, "blurb": "Registered with the Chamber. They helped you pin down exactly who you're for." },
-    { "id": "registrar",  "name": "City Registrar",      "model": "2Story_Columns.glb", "sign": null, "x": 4,   "z": -4,  "awning": [150, 130, 90],  "task": "domain",      "reward": 600, "blurb": "Filed the paperwork — your domain and business name are officially yours." },
-    { "id": "research_firm","name": "Insight Research Co.","model": "3Story_Slim.glb",  "sign": null, "x": -4,  "z": 4,   "awning": [120, 100, 180], "task": "competitors", "reward": 700, "blurb": "Insight Research handed over a competitor teardown. You know the field now." },
-    { "id": "bureau",     "name": "Small Business Bureau","model": "2Story_Wide.glb",   "sign": null, "x": 4,   "z": 4,   "awning": [90, 160, 130],  "task": "model",       "reward": 700, "blurb": "The Bureau walked you through revenue models. Your business model is sketched." },
-    { "id": "signshop",   "name": "Ace Sign & Print",    "model": "1Story_Sign.glb",    "sign": null, "x": -12, "z": -4,  "awning": [210, 120, 70],  "task": "logo",        "reward": 600, "blurb": "Ace Sign & Print mocked up your logo. It actually looks like a company." },
-    { "id": "brandstudio","name": "Hue Brand Studio",    "model": "2Story_Balcony.glb", "sign": null, "x": 12,  "z": -4,  "awning": [190, 90, 150],  "task": "brand",       "reward": 500, "blurb": "Hue Studio nailed your brand palette. Everything matches now." },
-    { "id": "citybank",   "name": "First City Bank",     "model": "2Story_Columns.glb", "sign": null, "x": 0,   "z": 8,   "awning": [80, 150, 110],  "task": "pricing",     "reward": 500, "market": "bank", "plan": "bank", "blurb": "The bank's advisor helped you set pricing that won't leave money on the table." },
-    { "id": "broker",     "name": "Apex Securities",     "model": "6Story_Stack.glb",   "sign": null, "x": 56,  "z": 8,   "awning": [120, 90, 160],  "market": "broker", "plan": "bank", "blurb": "Apex Securities — the trading floor where fortunes are made (and unmade)." },
-    { "id": "incubator",  "name": "Startup Incubator",   "model": "3Story_Balcony.glb", "sign": null, "x": 0,   "z": -8,  "awning": [90, 200, 210],  "blurb": "At the Incubator you mapped your business model canvas.",
-      "tasks": ["value_prop", "channels", "relationships", "key_resources", "key_activities", "partnerships", "cost_structure"] },
-    { "id": "ventures",   "name": "Apex Ventures",       "model": "6Story_Stack.glb",   "sign": null, "x": -12, "z": 4,   "awning": [60, 90, 140],   "task": "raise_round", "blurb": "Apex Ventures - bring a complete pitch and walk out with a check." },
-    { "id": "angel",      "name": "Angel Investor",      "model": "2Story_Columns.glb", "sign": null, "x": -8, "z": -40, "awning": [210, 180, 90],  "task": "seed", "reward": 5000, "blurb": "Apex's seed desk loved the pitch and wired you $5,000 to get off the ground — your first outside money." },
-    { "id": "outfitters", "name": "The Outfitters",      "model": "2Story_Balcony.glb", "sign": null, "x": 12,  "z": 4,   "awning": [180, 120, 200], "store": "outfit", "blurb": "The Outfitters - change your look and pick up a sharp new suit." },
-    { "id": "staffing",   "name": "TalentWorks Staffing","model": "3Story_Slim.glb",    "sign": null, "x": 8,   "z": 8,   "awning": [70, 140, 190],  "store": "hire",   "blurb": "TalentWorks - browse AI talent and bring someone on board." },
-    { "id": "grants",     "name": "Grants Office",       "model": "2Story_Columns.glb", "sign": null, "x": -40, "z": -8,  "awning": [110, 170, 140], "service": "grant", "plan": "bank", "blurb": "The Grants Office reviews business funding applications." },
-
-    { "id": "casino",     "name": "Lucky's Casino",    "model": "4Story_Wide_2Doors_Roof.glb", "sign": "signs/CasinoSign.glb",     "x": 16,  "z": -10, "awning": [200, 60, 80], "task": "risk_tips", "reward": 400, "game": "slots", "plan": "bank", "blurb": "The pit boss schooled you on runway and risk — cash is oxygen, never bet the company." },
-    { "id": "bakery",     "name": "Corner Bakery",     "model": "1Story.glb",            "sign": "signs/Sign_Bakery.glb",    "x": -16, "z": 6,   "awning": [210, 170, 120], "task": "money_tips", "reward": 300, "plan": "bank", "blurb": "The baker filled you in on how money flows in this town — earn, raise, price right, stay lean." },
-    { "id": "barbershop", "name": "Sharp Cuts",        "model": "1Story_GableRoof.glb",  "sign": "signs/Sign_Barbershop.glb","x": -16, "z": -2,  "awning": [80, 120, 200], "task": "network_tips", "reward": 250, "plan": "bank", "blurb": "The barber reminded you: your network is your net worth, and word of mouth beats any ad." },
-    { "id": "bookshop",   "name": "Page & Co.",        "model": "2Story.glb",            "sign": "signs/Sign_Bookshop.glb",  "x": -16, "z": -10, "awning": [60, 150, 140], "task": "strategy_tips", "reward": 300, "plan": "bank", "blurb": "The bookseller's advice: do one thing better than anyone, and measure what matters." },
-    { "id": "hardware",   "name": "Bolt Hardware",     "model": "2Story_Wide.glb",       "sign": "signs/Sign_Hardware.glb",  "x": 16,  "z": -2,  "awning": [210, 130, 50], "store": "shop" },
-    { "id": "pharmacy",   "name": "Wellness Pharmacy", "model": "2Story_Sign.glb",       "sign": "signs/Sign_Pharmacy.glb",  "x": 16,  "z": 6,   "awning": [80, 180, 120], "task": "wellness_tips", "reward": 250, "plan": "bank", "blurb": "The pharmacist's reminder: it's a marathon — rest, lean on your team, and don't burn out." },
-
-    { "id": "grocery",     "name": "Fresh Market",     "model": "2Story_Double.glb","sign": null, "x": -8, "z": 12, "awning": [70, 160, 90], "task": "city_tour", "reward": 300, "plan": "bank", "blurb": "The Fresh Market city guide showed you the ropes — you know your way around town now." },
-    { "id": "convenience", "name": "24/7 Mart",        "model": "2Story_Sidehouse.glb",  "sign": null, "x": 8,  "z": 12, "awning": [220, 150, 60], "task": "hustle_tips", "reward": 300, "plan": "bank", "blurb": "The shopkeeper's hustle lesson: do things that don't scale, ship scrappy, chase quick wins." },
-    { "id": "cafe",        "name": "Bean Scene Cafe",  "model": "1Story_RoundRoof.glb",  "sign": null, "x": 0,  "z": -15, "awning": [150, 100, 70], "task": "cofounder", "reward": 2000, "blurb": "You bought Robin a coffee and laid it all out. They're in — your first believer, and your co-founder." }
-  ],
-
-  "_parks_comment": "City parks: named green spaces that replace a backdrop building at their grid address (avenue, street). Decorative only — grass + scattered seasonal trees + a central fountain + a floating name label. Walkable (no collision), no interaction.",
-  "parks": [
-    { "id": "founders_green", "name": "Founders Green", "ave": 8,  "st": 6  },
-    { "id": "maple_commons",  "name": "Maple Commons",  "ave": 12, "st": 6  },
-    { "id": "riverside_park", "name": "Riverside Park", "ave": 6,  "st": 8  },
-    { "id": "liberty_square", "name": "Liberty Square", "ave": 14, "st": 9  },
-    { "id": "cedar_grove",    "name": "Cedar Grove",    "ave": 8,  "st": 13 },
-    { "id": "sunset_gardens", "name": "Sunset Gardens", "ave": 12, "st": 14 },
-    { "id": "willow_park",    "name": "Willow Park",    "ave": 10, "st": 13 },
-    { "id": "unicorn_meadow", "name": "Unicorn Meadow", "ave": 15, "st": 11 }
-  ]
+ "_comment": "Office park lots. col(0..2)/row(0..1) place the building on the plaza grid; deposit is paid once to lease, rent is charged per in-game month. HQ starts leased. `dept` themes the building (color); `plan` is the floor-plan template (assets/floor_plans.json) used for its interior.",
+ "lots": [
+  {
+   "id": "hq",
+   "name": "Headquarters",
+   "dept": "Executive",
+   "col": 1,
+   "row": 1,
+   "model": "3Story_Small.glb",
+   "deposit": 3500,
+   "rent": 400,
+   "color": [
+    96,
+    112,
+    150
+   ],
+   "status": "available",
+   "plan": "hq"
+  },
+  {
+   "id": "eng",
+   "name": "Engineering Wing",
+   "dept": "Engineering",
+   "col": 0,
+   "row": 0,
+   "model": "4Story.glb",
+   "deposit": 2500,
+   "rent": 300,
+   "color": [
+    70,
+    130,
+    175
+   ],
+   "status": "available",
+   "plan": "tower",
+   "structure": {
+    "floors": [
+     {
+      "hub": "lobby",
+      "reception": true
+     },
+     {
+      "hub": "elev_lobby",
+      "wings": {
+       "east": "tower",
+       "west": "studio"
+      }
+     },
+     {
+      "hub": "elev_lobby",
+      "wings": {
+       "east": "hq"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "research",
+   "name": "Research Labs",
+   "dept": "Research",
+   "col": 1,
+   "row": 0,
+   "model": "3Story_Small.glb",
+   "deposit": 2800,
+   "rent": 320,
+   "color": [
+    120,
+    100,
+    185
+   ],
+   "status": "available",
+   "plan": "studio"
+  },
+  {
+   "id": "design",
+   "name": "Design Studio",
+   "dept": "Design",
+   "col": 2,
+   "row": 0,
+   "model": "2Story_Balcony.glb",
+   "deposit": 2200,
+   "rent": 260,
+   "color": [
+    180,
+    92,
+    150
+   ],
+   "status": "available",
+   "plan": "studio"
+  },
+  {
+   "id": "growth",
+   "name": "Growth Loft",
+   "dept": "Growth",
+   "col": 0,
+   "row": 1,
+   "model": "2Story.glb",
+   "deposit": 2000,
+   "rent": 240,
+   "color": [
+    205,
+    140,
+    60
+   ],
+   "status": "available",
+   "plan": "hq"
+  },
+  {
+   "id": "finance",
+   "name": "Finance Tower",
+   "dept": "Finance",
+   "col": 2,
+   "row": 1,
+   "model": "6Story_Stack.glb",
+   "deposit": 3000,
+   "rent": 360,
+   "color": [
+    80,
+    155,
+    105
+   ],
+   "status": "available",
+   "plan": "tower"
+  },
+  {
+   "id": "starter",
+   "name": "Starter Office",
+   "dept": "Operations",
+   "model": "1Story_Sign.glb",
+   "deposit": 200,
+   "rent": 200,
+   "color": [
+    110,
+    175,
+    125
+   ],
+   "status": "available",
+   "plan": "studio",
+   "locked": true
+  }
+ ],
+ "_npc_comment": "Non-leasable flavor buildings around the plaza. `sign` is a GLB word-sign in glb/signs (or null for a plain awning + label). `x`,`z` are world coords; all face +z. `awning` tints the door canopy. A `task` makes the building a QUEST STOP: walk up + press E to complete that to-do (tasks.py key), pay `reward` seed cash once, and post `blurb` to the inbox.",
+ "npc": [
+  {
+   "id": "chamber",
+   "name": "Chamber of Commerce",
+   "model": "2Story_Columns.glb",
+   "sign": null,
+   "x": -4,
+   "z": -4,
+   "awning": [
+    120,
+    150,
+    200
+   ],
+   "task": "customer",
+   "reward": 1600,
+   "blurb": "Registered with the Chamber. They helped you pin down exactly who you're for."
+  },
+  {
+   "id": "registrar",
+   "name": "City Registrar",
+   "model": "2Story_Columns.glb",
+   "sign": null,
+   "x": 4,
+   "z": -4,
+   "awning": [
+    150,
+    130,
+    90
+   ],
+   "task": "domain",
+   "reward": 1200,
+   "blurb": "Filed the paperwork \u2014 your domain and business name are officially yours."
+  },
+  {
+   "id": "research_firm",
+   "name": "Insight Research Co.",
+   "model": "3Story_Slim.glb",
+   "sign": null,
+   "x": -4,
+   "z": 4,
+   "awning": [
+    120,
+    100,
+    180
+   ],
+   "task": "competitors",
+   "reward": 1400,
+   "blurb": "Insight Research handed over a competitor teardown. You know the field now."
+  },
+  {
+   "id": "bureau",
+   "name": "Small Business Bureau",
+   "model": "2Story_Wide.glb",
+   "sign": null,
+   "x": 4,
+   "z": 4,
+   "awning": [
+    90,
+    160,
+    130
+   ],
+   "task": "model",
+   "reward": 1400,
+   "blurb": "The Bureau walked you through revenue models. Your business model is sketched."
+  },
+  {
+   "id": "signshop",
+   "name": "Ace Sign & Print",
+   "model": "1Story_Sign.glb",
+   "sign": null,
+   "x": -12,
+   "z": -4,
+   "awning": [
+    210,
+    120,
+    70
+   ],
+   "task": "logo",
+   "reward": 1200,
+   "blurb": "Ace Sign & Print mocked up your logo. It actually looks like a company."
+  },
+  {
+   "id": "brandstudio",
+   "name": "Hue Brand Studio",
+   "model": "2Story_Balcony.glb",
+   "sign": null,
+   "x": 12,
+   "z": -4,
+   "awning": [
+    190,
+    90,
+    150
+   ],
+   "task": "brand",
+   "reward": 1000,
+   "blurb": "Hue Studio nailed your brand palette. Everything matches now."
+  },
+  {
+   "id": "citybank",
+   "name": "First City Bank",
+   "model": "2Story_Columns.glb",
+   "sign": null,
+   "x": 0,
+   "z": 8,
+   "awning": [
+    80,
+    150,
+    110
+   ],
+   "task": "pricing",
+   "reward": 1000,
+   "market": "bank",
+   "plan": "bank",
+   "blurb": "The bank's advisor helped you set pricing that won't leave money on the table."
+  },
+  {
+   "id": "broker",
+   "name": "Apex Securities",
+   "model": "6Story_Stack.glb",
+   "sign": null,
+   "x": 56,
+   "z": 8,
+   "awning": [
+    120,
+    90,
+    160
+   ],
+   "market": "broker",
+   "plan": "bank",
+   "blurb": "Apex Securities \u2014 the trading floor where fortunes are made (and unmade)."
+  },
+  {
+   "id": "incubator",
+   "name": "Startup Incubator",
+   "model": "3Story_Balcony.glb",
+   "sign": null,
+   "x": 0,
+   "z": -8,
+   "awning": [
+    90,
+    200,
+    210
+   ],
+   "blurb": "At the Incubator you mapped your business model canvas.",
+   "tasks": [
+    "value_prop",
+    "channels",
+    "relationships",
+    "key_resources",
+    "key_activities",
+    "partnerships",
+    "cost_structure"
+   ]
+  },
+  {
+   "id": "ventures",
+   "name": "Apex Ventures",
+   "model": "6Story_Stack.glb",
+   "sign": null,
+   "x": -12,
+   "z": 4,
+   "awning": [
+    60,
+    90,
+    140
+   ],
+   "task": "raise_round",
+   "blurb": "Apex Ventures - bring a complete pitch and walk out with a check."
+  },
+  {
+   "id": "angel",
+   "name": "Angel Investor",
+   "model": "2Story_Columns.glb",
+   "sign": null,
+   "x": -8,
+   "z": -40,
+   "awning": [
+    210,
+    180,
+    90
+   ],
+   "task": "seed",
+   "reward": 10000,
+   "blurb": "Apex's seed desk loved the pitch and wired you $5,000 to get off the ground \u2014 your first outside money."
+  },
+  {
+   "id": "outfitters",
+   "name": "The Outfitters",
+   "model": "2Story_Balcony.glb",
+   "sign": null,
+   "x": 12,
+   "z": 4,
+   "awning": [
+    180,
+    120,
+    200
+   ],
+   "store": "outfit",
+   "blurb": "The Outfitters - change your look and pick up a sharp new suit."
+  },
+  {
+   "id": "staffing",
+   "name": "TalentWorks Staffing",
+   "model": "3Story_Slim.glb",
+   "sign": null,
+   "x": 8,
+   "z": 8,
+   "awning": [
+    70,
+    140,
+    190
+   ],
+   "store": "hire",
+   "blurb": "TalentWorks - browse AI talent and bring someone on board."
+  },
+  {
+   "id": "grants",
+   "name": "Grants Office",
+   "model": "2Story_Columns.glb",
+   "sign": null,
+   "x": -40,
+   "z": -8,
+   "awning": [
+    110,
+    170,
+    140
+   ],
+   "service": "grant",
+   "plan": "bank",
+   "blurb": "The Grants Office reviews business funding applications."
+  },
+  {
+   "id": "embassy",
+   "name": "Trade Embassy",
+   "model": "2Story_Columns.glb",
+   "sign": null,
+   "x": -24,
+   "z": -24,
+   "awning": [
+    90,
+    170,
+    120
+   ],
+   "game": "farm",
+   "plan": "bank",
+   "blurb": "The Trade Embassy runs your overseas venture — a farm in South America that earns passive income while you build."
+  },
+  {
+   "id": "casino",
+   "name": "Lucky's Casino",
+   "model": "4Story_Wide_2Doors_Roof.glb",
+   "sign": "signs/CasinoSign.glb",
+   "x": 16,
+   "z": -10,
+   "awning": [
+    200,
+    60,
+    80
+   ],
+   "task": "risk_tips",
+   "reward": 800,
+   "game": "slots",
+   "plan": "bank",
+   "blurb": "The pit boss schooled you on runway and risk \u2014 cash is oxygen, never bet the company."
+  },
+  {
+   "id": "bakery",
+   "name": "Corner Bakery",
+   "model": "1Story.glb",
+   "sign": "signs/Sign_Bakery.glb",
+   "x": -16,
+   "z": 6,
+   "awning": [
+    210,
+    170,
+    120
+   ],
+   "task": "money_tips",
+   "reward": 600,
+   "plan": "bank",
+   "blurb": "The baker filled you in on how money flows in this town \u2014 earn, raise, price right, stay lean."
+  },
+  {
+   "id": "barbershop",
+   "name": "Sharp Cuts",
+   "model": "1Story_GableRoof.glb",
+   "sign": "signs/Sign_Barbershop.glb",
+   "x": -16,
+   "z": -2,
+   "awning": [
+    80,
+    120,
+    200
+   ],
+   "task": "network_tips",
+   "reward": 500,
+   "plan": "bank",
+   "blurb": "The barber reminded you: your network is your net worth, and word of mouth beats any ad."
+  },
+  {
+   "id": "bookshop",
+   "name": "Page & Co.",
+   "model": "2Story.glb",
+   "sign": "signs/Sign_Bookshop.glb",
+   "x": -16,
+   "z": -10,
+   "awning": [
+    60,
+    150,
+    140
+   ],
+   "task": "strategy_tips",
+   "reward": 600,
+   "plan": "bank",
+   "blurb": "The bookseller's advice: do one thing better than anyone, and measure what matters."
+  },
+  {
+   "id": "hardware",
+   "name": "Bolt Hardware",
+   "model": "2Story_Wide.glb",
+   "sign": "signs/Sign_Hardware.glb",
+   "x": 16,
+   "z": -2,
+   "awning": [
+    210,
+    130,
+    50
+   ],
+   "store": "shop"
+  },
+  {
+   "id": "pharmacy",
+   "name": "Wellness Pharmacy",
+   "model": "2Story_Sign.glb",
+   "sign": "signs/Sign_Pharmacy.glb",
+   "x": 16,
+   "z": 6,
+   "awning": [
+    80,
+    180,
+    120
+   ],
+   "task": "wellness_tips",
+   "reward": 500,
+   "plan": "bank",
+   "blurb": "The pharmacist's reminder: it's a marathon \u2014 rest, lean on your team, and don't burn out."
+  },
+  {
+   "id": "grocery",
+   "name": "Fresh Market",
+   "model": "2Story_Double.glb",
+   "sign": null,
+   "x": -8,
+   "z": 12,
+   "awning": [
+    70,
+    160,
+    90
+   ],
+   "task": "city_tour",
+   "reward": 600,
+   "plan": "bank",
+   "blurb": "The Fresh Market city guide showed you the ropes \u2014 you know your way around town now."
+  },
+  {
+   "id": "convenience",
+   "name": "24/7 Mart",
+   "model": "2Story_Sidehouse.glb",
+   "sign": null,
+   "x": 8,
+   "z": 12,
+   "awning": [
+    220,
+    150,
+    60
+   ],
+   "task": "hustle_tips",
+   "reward": 600,
+   "plan": "bank",
+   "blurb": "The shopkeeper's hustle lesson: do things that don't scale, ship scrappy, chase quick wins."
+  },
+  {
+   "id": "cafe",
+   "name": "Bean Scene Cafe",
+   "model": "1Story_RoundRoof.glb",
+   "sign": null,
+   "x": 0,
+   "z": -15,
+   "awning": [
+    150,
+    100,
+    70
+   ],
+   "task": "cofounder",
+   "reward": 4000,
+   "blurb": "You bought Robin a coffee and laid it all out. They're in \u2014 your first believer, and your co-founder."
+  }
+ ],
+ "_parks_comment": "City parks: named green spaces that replace a backdrop building at their grid address (avenue, street). Decorative only \u2014 grass + scattered seasonal trees + a central fountain + a floating name label. Walkable (no collision), no interaction.",
+ "parks": [
+  {
+   "id": "founders_green",
+   "name": "Founders Green",
+   "ave": 8,
+   "st": 6
+  },
+  {
+   "id": "maple_commons",
+   "name": "Maple Commons",
+   "ave": 12,
+   "st": 6
+  },
+  {
+   "id": "riverside_park",
+   "name": "Riverside Park",
+   "ave": 6,
+   "st": 8
+  },
+  {
+   "id": "liberty_square",
+   "name": "Liberty Square",
+   "ave": 14,
+   "st": 9
+  },
+  {
+   "id": "cedar_grove",
+   "name": "Cedar Grove",
+   "ave": 8,
+   "st": 13
+  },
+  {
+   "id": "sunset_gardens",
+   "name": "Sunset Gardens",
+   "ave": 12,
+   "st": 14
+  },
+  {
+   "id": "willow_park",
+   "name": "Willow Park",
+   "ave": 10,
+   "st": 13
+  },
+  {
+   "id": "unicorn_meadow",
+   "name": "Unicorn Meadow",
+   "ave": 15,
+   "st": 11
+  }
+ ]
 }
