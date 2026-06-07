@@ -71,3 +71,22 @@ class Dealership:
 
 def can_afford(deal: CarDeal, cash: int) -> bool:
     return cash >= deal.price
+
+
+# Fraction of list price you get back when selling a car at the Auto Mall.
+RESALE_FRACTION = 0.6
+
+
+def price_of(model: str) -> int:
+    """List price for a model basename (0 if it's not in the lineup)."""
+    return next((p for m, _n, p in LINEUP if m == model), 0)
+
+
+def name_of(model: str) -> str:
+    """Display name for a model basename (falls back to the basename itself)."""
+    return next((n for m, n, _p in LINEUP if m == model), model)
+
+
+def resale_value(model: str) -> int:
+    """What selling this car back pays out."""
+    return int(price_of(model) * RESALE_FRACTION)

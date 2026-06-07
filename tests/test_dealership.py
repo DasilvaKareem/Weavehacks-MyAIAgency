@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 
 from game import dealership
-from game.dealership import Dealership, can_afford
+from game.dealership import (Dealership, can_afford, price_of, name_of,
+                            resale_value)
 
 
 class DealershipTest(unittest.TestCase):
@@ -43,6 +44,22 @@ class DealershipTest(unittest.TestCase):
         self.assertTrue(can_afford(car, car.price))
         self.assertTrue(can_afford(car, car.price + 1))
         self.assertFalse(can_afford(car, car.price - 1))
+
+    def test_lookup_helpers_by_model(self):
+        car = self.lot.cars[3]
+        self.assertEqual(price_of(car.model), car.price)
+        self.assertEqual(name_of(car.model), car.name)
+
+    def test_lookups_fall_back_for_unknown_model(self):
+        self.assertEqual(price_of("NotACar"), 0)
+        self.assertEqual(name_of("NotACar"), "NotACar")   # echoes the basename
+        self.assertEqual(resale_value("NotACar"), 0)
+
+    def test_resale_is_a_fraction_of_list(self):
+        car = self.lot.cars[1]
+        self.assertEqual(resale_value(car.model),
+                         int(car.price * dealership.RESALE_FRACTION))
+        self.assertLess(resale_value(car.model), car.price)   # selling loses value
 
 
 if __name__ == "__main__":

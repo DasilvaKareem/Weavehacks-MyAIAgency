@@ -256,6 +256,19 @@ class Game:
         for b in self.park.buildings:
             if b.id in saved_leases:
                 self.park.lease(b)
+        # Restore the car you bought at the Auto Mall: re-park it on its showroom slot
+        # (marking that slot sold, so the lot never shows a ghost of a car you own).
+        self.owned_car = self.link.load_owned_car()
+        if self.owned_car is not None:
+            self.car.model = self.owned_car
+            slot = next((c for c in self.dealership.cars if c.model == self.owned_car), None)
+            if slot is not None:
+                slot.sold = True
+                self.car.x, self.car.z, self.car.yaw = slot.x, slot.z, 0.0
+            else:                                  # model no longer on offer — park at spawn
+                sx, sz = self.park.spawn
+                self.car.x, self.car.z = sx + 4.5, sz
+        self._saved_owned_car = self.owned_car
         self.calendar.load_state(self.link.load_calendar())  # restore the in-game date
         self.season.set_day(self.calendar.day)               # foliage matches the restored date
         self._bob_done = self.link.load_flag("bob_gift")   # already got the welcome gift?
@@ -476,6 +489,12 @@ class Game:
         self.characters[:] = [self.player.ch]
         self.selected = -1
         self.park = Park(load_park())                 # fresh leases (only HQ)
+        # Fresh city: no car owned, a full ghost showroom again.
+        self.dealership = dealership.Dealership(*block_pos(11, 9))
+        self.owned_car, self._saved_owned_car = None, None
+        self.car = vehicle.DrivableCar(model="SportsCar")
+        self.driving = False
+        self.link.save_owned_car(None)
         self.current_building = next((b for b in self.park.buildings if b.status == "hq"),
                                      self.park.buildings[0] if self.park.buildings else None)
         self.interior = interior.for_building(self.current_building, self.plans)
@@ -1968,6 +1987,9 @@ class Game:
         if force or leases != self._saved_leases:
             self.link.save_leases(leases)
             self._saved_leases = leases
+        if force or self.owned_car != self._saved_owned_car:
+            self.link.save_owned_car(self.owned_car)
+            self._saved_owned_car = self.owned_car
 
     # -- office park ----------------------------------------------------------
     def _enter_park(self) -> None:
@@ -2732,7 +2754,27 @@ class Game:
         self.car.model = deal.model
         self.car.x, self.car.z, self.car.yaw = deal.x, deal.z, 0.0
         self.car.stop()
+        self.link.save_owned_car(self.owned_car)   # persist immediately
+        self._saved_owned_car = self.owned_car
         self._toast(f"Bought the {deal.name}! Walk up and press F to drive.")
+
+    def _sell_car(self) -> None:
+        """Sell your car back to the Auto Mall for a partial refund. The matching
+        showroom slot returns to a buyable ghost."""
+        if self.owned_car is None:
+            return
+        refund = dealership.resale_value(self.owned_car)
+        name = dealership.name_of(self.owned_car)
+        self.cash += refund
+        for c in self.dealership.cars:             # its ghost is back on the floor
+            if c.model == self.owned_car:
+                c.sold = False
+        self.owned_car = None
+        self.driving = False
+        self.car.stop()
+        self.link.save_owned_car(None)
+        self._saved_owned_car = None
+        self._toast(f"Sold the {name} for ${refund:,}.")
 
     def _draw_showroom_cars(self) -> None:
         """The Auto Mall's ghost display cars (3D pass). Each unsold car is a slowly
@@ -2791,7 +2833,8 @@ class Game:
                 _prompt(f"🔒 Locked — the {deal_near.name} costs ${deal_near.price:,}",
                         pr.Color(235, 170, 170, 255))
         elif car_near:
-            _prompt("Press  F  to drive")
+            refund = dealership.resale_value(self.owned_car)
+            _prompt(f"Press  F  to drive      ·      X  to sell  (${refund:,})")
 
     def _park_frame(self, dt: float) -> None:
         """One frame of the walkable park: move, lease/enter, draw."""
@@ -2934,18 +2977,20 @@ class Game:
                 self._e_cooldown = 8
 
         if not frozen:
-            # F — get in / out of the car. Available driving (exit) or on foot next
-            # to it (enter). It's its own key, so it never competes with E-interact.
-            if pr.is_key_pressed(pr.KEY_F):
-                if self.driving:
-                    self._exit_car(); return
-                elif car_near:
-                    self._enter_car(); return
-                elif deal_near is not None and self.owned_car is None:
-                    # Tried the door on a showroom car — it's locked until you buy it.
-                    self._toast(f"🔒 The {deal_near.name} is locked — press E to buy "
-                                f"it (${deal_near.price:,}).")
-                    return
+            # F / □ get in & out of the car (□ is free in the park; △ stays E-interact
+            # so it never clashes with buying at the showroom). X / ○ sells it back.
+            enter_exit = pr.is_key_pressed(pr.KEY_F) or gamepad.pressed(gamepad.SQUARE)
+            if enter_exit and self.driving:
+                self._exit_car(); return
+            if enter_exit and car_near:
+                self._enter_car(); return
+            if car_near and (pr.is_key_pressed(pr.KEY_X) or gamepad.pressed(gamepad.CIRCLE)):
+                self._sell_car(); return         # sell your owned car back to the mall
+            if enter_exit and deal_near is not None and self.owned_car is None:
+                # Tried the door on a showroom car — it's locked until you buy it.
+                self._toast(f"🔒 The {deal_near.name} is locked — press E to buy "
+                            f"it (${deal_near.price:,}).")
+                return
         if not frozen and not self.driving:
             if pr.is_key_pressed(pr.KEY_P):
                 self._enter_office(); return
