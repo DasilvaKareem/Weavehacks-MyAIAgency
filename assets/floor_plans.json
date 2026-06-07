@@ -85,6 +85,32 @@
         {"name": "coffee", "kind": "coffee", "col": 11.5, "row": 8.0},
         {"name": "door", "kind": "door", "col": 7.0, "row": 9.0}
       ]
+    },
+
+    "home_small": {
+      "name": "Studio Home",
+      "cols": 10, "rows": 9,
+      "desk_cols": [], "desk_rows": [],
+      "furniture_seed": 2601,
+      "zones": [
+        {"name": "stairs", "kind": "stairs", "col": 1.6, "row": 2.0},
+        {"name": "bed", "kind": "bed", "col": 7.8, "row": 2.2},
+        {"name": "lounge", "kind": "lounge", "col": 5.0, "row": 6.0},
+        {"name": "door", "kind": "door", "col": 5.0, "row": 7.5}
+      ]
+    },
+    "home_big": {
+      "name": "Loft Home",
+      "cols": 14, "rows": 12,
+      "desk_cols": [], "desk_rows": [],
+      "furniture_seed": 2602,
+      "zones": [
+        {"name": "stairs", "kind": "stairs", "col": 2.2, "row": 2.4},
+        {"name": "bed", "kind": "bed", "col": 11.0, "row": 2.6},
+        {"name": "lounge", "kind": "lounge", "col": 4.0, "row": 8.0},
+        {"name": "coffee", "kind": "coffee", "col": 11.0, "row": 8.0},
+        {"name": "door", "kind": "door", "col": 7.0, "row": 10.0}
+      ]
     }
   }
 }

@@ -986,7 +986,8 @@ class Game:
     def max_desks(self) -> int:
         """Total headcount cap: base desks plus a bump per office leased, capped by
         the current building's total wing desk capacity (across all its wings)."""
-        leased = sum(1 for b in self.park.buildings if b.status == "leased")
+        leased = sum(1 for b in self.park.buildings
+                     if b.status == "leased" and not getattr(b, "home", False))
         cap = BASE_DESKS + leased * DESKS_PER_LEASE
         wing_seats = sum(self.interior.rooms[k].plan(self.plans).desk_capacity()
                          for k in self.interior.wings()) or BASE_DESKS
@@ -2192,9 +2193,14 @@ class Game:
         self.plan = self.room.plan(self.plans)
         zones.set_active(self.plan)
         self.scene.set_plan(self.plan, seed=self.room.seed)
+        # The Company Files cabinet + CEO Desk are office-only — never in a quest
+        # building or one of your homes (a home is a place to live, not run the
+        # company from).
+        home = bool(getattr(self.current_building, "home", False))
+        self.scene.show_records = (self._quest_building is None and not home)
         # The CEO Desk lives only in the CEO's own office room (top-floor wing) of
-        # your real office — never in a quest building.
-        self.scene.show_ceo_desk = (self._quest_building is None
+        # your real office — never in a quest building or a home.
+        self.scene.show_ceo_desk = (self._quest_building is None and not home
                                     and room_key == self.interior.ceo_office())
         locomotion.set_bounds(*self.plan.bounds())
         self._meeting_active, self._gathered = False, []   # meetings don't span rooms
@@ -2386,14 +2392,23 @@ class Game:
                 f"  Day {self.calendar.day_number} in business",
                 f"  Cash on hand:   ${int(self.cash):,}",
                 f"  Team hired:     {len(roster)} {'person' if len(roster) == 1 else 'people'}",
-                f"  Offices leased: {len(self.park.leased())}",
+                f"  Offices leased: {len([b for b in self.park.leased() if not getattr(b, 'home', False)])}",
+                f"  Homes owned:    {len([b for b in self.park.leased() if getattr(b, 'home', False)])}",
                 f"  Funding rounds: {len(self._rounds_raised())}",
                 f"  Milestones:     {done} / {total} done",
                 "“Every wall in here was once an empty lot. Keep building.”",
             ]
         if sub == "realty":
             rows = ["Lots around the city:"]
+            homes = []
             for b in self.park.buildings:
+                if getattr(b, "home", False):           # homes get their own section
+                    extra = " · garage" if getattr(b, "garage", False) else ""
+                    if b.leased:
+                        homes.append(f"  {b.name} — yours  (${b.rent:,}/mo rent){extra}")
+                    else:
+                        homes.append(f"  {b.name} — FOR SALE  ${b.deposit:,} down · ${b.rent:,}/mo{extra}")
+                    continue
                 if b.status == "hq":
                     rows.append(f"  {b.name} — Headquarters (home)")
                 elif b.leased:
@@ -2402,6 +2417,10 @@ class Game:
                     rows.append(f"  {b.name} — locked  (meet Mae to open)")
                 else:
                     rows.append(f"  {b.name} — FOR LEASE  ${b.deposit:,} + ${b.rent:,}/mo")
+            if homes:
+                rows.append("")
+                rows.append("Homes on Maple Street:")
+                rows.extend(homes)
             rows.append("“Walk up to any lot and press E to sign — we'll do the paperwork.”")
             return rows
         if sub == "news":
@@ -3009,6 +3028,16 @@ class Game:
                 elif self.cash >= near.deposit:
                     self.cash -= near.deposit
                     self.park.lease(near)        # capacity rises via max_desks
+                    if getattr(near, "home", False):
+                        self._toast(f"You bought {near.name}! Home sweet home.")
+                        self.inbox.post(
+                            "Keystone Realty",
+                            f"Congratulations on {near.name}! The keys are yours. "
+                            f"Rent runs ${near.rent:,}/mo. Walk up and press E anytime "
+                            "to head home and put your feet up.",
+                            kind="system", subject=f"\U0001F3E0 {near.name} is yours",
+                            ts=pr.get_time())
+                        self._e_cooldown = 8
             elif near_npc is not None and press_e:
                 if near_npc.store == "shop":
                     # The furniture shop applies to your OFFICE (the active scene in
@@ -3197,7 +3226,8 @@ class Game:
             if d > LABEL_DIST and b.status != "hq":
                 continue
             if b.status == "available":
-                sub, col, mc = f"LEASE  ${b.deposit:,}", pr.Color(255, 170, 90, 255), None
+                verb = "BUY" if getattr(b, "home", False) else "LEASE"
+                sub, col, mc = f"{verb}  ${b.deposit:,}", pr.Color(255, 170, 90, 255), None
             else:
                 sub, col, mc = b.dept, pr.Color(150, 230, 175, 255), pr.Color(255, 214, 110, 255)
             # cap label height so tall towers don't pin their label onto the HUD
@@ -3270,6 +3300,9 @@ class Game:
         if near is not None:
             if near.leased:
                 prompt = f"Press  E  to enter {near.name}"
+            elif getattr(near, "home", False):
+                prompt = f"Press  E  to buy {near.name}   -   ${near.deposit:,} down  ·  ${near.rent:,}/mo rent"
+                afford = self.cash >= near.deposit
             else:
                 prompt = f"Press  E  to lease {near.name}   -   Deposit ${near.deposit:,}  ·  Rent ${near.rent:,}/mo"
                 afford = self.cash >= near.deposit

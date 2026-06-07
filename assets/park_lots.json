@@ -139,6 +139,56 @@
    "status": "available",
    "plan": "studio",
    "locked": true
+  },
+  {
+   "id": "home_studio",
+   "name": "Maple Street Studio",
+   "dept": "Home",
+   "model": "2Story_Sidehouse.glb",
+   "deposit": 800,
+   "rent": 120,
+   "color": [
+    176,
+    140,
+    110
+   ],
+   "status": "available",
+   "plan": "home_small",
+   "home": true
+  },
+  {
+   "id": "home_cottage",
+   "name": "Cedar Cottage",
+   "dept": "Home",
+   "model": "2Story_Stairs.glb",
+   "deposit": 1500,
+   "rent": 200,
+   "color": [
+    158,
+    122,
+    150
+   ],
+   "status": "available",
+   "plan": "home_small",
+   "home": true,
+   "garage": true
+  },
+  {
+   "id": "home_loft",
+   "name": "Downtown Loft",
+   "dept": "Home",
+   "model": "2Story_Stairs.glb",
+   "deposit": 2500,
+   "rent": 320,
+   "color": [
+    120,
+    128,
+    160
+   ],
+   "status": "available",
+   "plan": "home_big",
+   "home": true,
+   "garage": true
   }
  ],
  "_npc_comment": "Non-leasable flavor buildings around the plaza. `sign` is a GLB word-sign in glb/signs (or null for a plain awning + label). `x`,`z` are world coords; all face +z. `awning` tints the door canopy. A `task` makes the building a QUEST STOP: walk up + press E to complete that to-do (tasks.py key), pay `reward` seed cash once, and post `blurb` to the inbox.",
