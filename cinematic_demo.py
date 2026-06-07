@@ -39,6 +39,8 @@ def main() -> None:
     ap.add_argument("--todo", default="name",
                     help="which to-do's cutscene to render (see --list)")
     ap.add_argument("--all", action="store_true", help="render all 10 cutscenes")
+    ap.add_argument("--demo", action="store_true",
+                    help="render the 3-beat 'how it works' reel (chaos → redis → weave)")
     ap.add_argument("--list", action="store_true", help="list the cutscenes and exit")
     ap.add_argument("--live", action="store_true",
                     help="realtime preview in a window (writes nothing)")
@@ -56,7 +58,12 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.list:
+        print("quest line:")
         for key in cutscenes.ORDER:
+            c = cutscenes.CUTSCENES[key]
+            print(f"  {key:<10} [{c.trigger:^6}] {c.title}")
+        print("demo reel (--demo):")
+        for key in cutscenes.DEMO_ORDER:
             c = cutscenes.CUTSCENES[key]
             print(f"  {key:<10} [{c.trigger:^6}] {c.title}")
         return
@@ -75,7 +82,12 @@ def main() -> None:
         except Exception as exc:
             print(f"[cast] no save loaded ({exc}); using stock actors")
 
-    keys = cutscenes.ORDER if args.all else [args.todo]
+    if args.all:
+        keys = cutscenes.ORDER
+    elif args.demo:
+        keys = cutscenes.DEMO_ORDER
+    else:
+        keys = [args.todo]
     if not args.film:
         for k in keys:
             if k not in cutscenes.CUTSCENES:

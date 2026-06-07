@@ -312,6 +312,129 @@ def _cut_profitable():
 
 
 # --------------------------------------------------------------------------- #
+# the demo reel  (how it works: the problem → Redis → Weave)
+# --------------------------------------------------------------------------- #
+# A standalone 3-beat reel for the 60-second "how we built it" pitch. It tells
+# one story: a world full of autonomous agents is one bad loop from collapse —
+# Redis gives that world a body (it knows where everything is), and W&B Weave
+# gives it a conscience (it watches every call and optimizes the agents itself).
+def _cut_chaos():
+    """problem · BEGIN — a world full of agents, and nobody knows where anyone is."""
+    ceo = _ceo(0.0, 0.0, face=(0.0, 4.0))
+    # Five agents on crossing paths: motion without coordination — the chaos.
+    wanderers = [
+        ("eng", "Engineer",   "Casual3_Male.gltf",   31, [(-5.0, -3.0), (-1.0, 2.0), (3.0, -1.0)]),
+        ("des", "Designer",   "Casual3_Female.gltf", 32, [(4.8, 3.2), (0.8, -2.0), (-3.4, 1.6)]),
+        ("ana", "Analyst",    "OldClassy_Male.gltf",  33, [(4.6, -3.4), (0.4, 0.6), (-4.2, 3.0)]),
+        ("mar", "Marketer",   "Casual2_Male.gltf",    34, [(-4.6, 3.4), (-0.4, -0.6), (4.2, -2.8)]),
+        ("res", "Researcher", "Casual_Female.gltf",   35, [(3.2, 4.0), (-1.8, 1.0), (-5.0, -2.6)]),
+    ]
+    team = [ceo]
+    actors = [Actor("ceo", ceo, beats=[
+        Hold(0, 14, "Idle"), Face(2.0, "eng"), Face(5.5, "mar"), Face(8.5, "des")])]
+    for key, nm, mdl, seed, path in wanderers:
+        ch = _person(nm, path[0][0], path[0][1], seed=seed, model=mdl, role=nm)
+        team.append(ch)
+        actors.append(Actor(key, ch, beats=[Walk(0.0, 11.0, path, "Walk"), Hold(11.0, 3.5, "Idle")]))
+    shots = [
+        Shot.crane(0.0, 3.4, x=0.0, z=6.6, y=(6.2, 2.4), look=(0, 1, 0), fov=46.0),
+        Shot.orbit(3.4, 4.0, center=(0, 0, 0), radius=6.6, height=2.6, deg=(0, 140), fov=44.0),
+        Shot.dolly(7.4, 3.2, frm=(0.0, 1.7, 4.2), to=(0.0, 1.6, 2.4), look="ceo", fov=(42, 32)),
+        Shot.static(10.6, 3.6, pos=(4.8, 2.0, 4.8), look=(0, 1.2, 0), fov=40.0),
+    ]
+    script = [
+        Narrate(0.4, 3.4, "A living world — dozens of AI agents talking, deciding, working."),
+        Narrate(4.0, 3.6, "Now the hard part: how do you stop it collapsing into chaos?"),
+        Say(8.0, 2.8, "You", "Where is everyone? Who's even doing what?"),
+        Narrate(11.2, 3.0, "A sandbox of agents is one bad loop from bankruptcy."),
+    ]
+    return Scene(actors, shots, script=script, time_of_day="Morning", name="11_chaos"), team
+
+
+def _cut_redis():
+    """redis · MIDDLE — Redis gives the world a body: it knows where everything is."""
+    ceo = _ceo(-4.0, 2.6, face=(1.0, 0.0))
+    des = _person("Designer", 3.0, -1.0, seed=42, model="Casual3_Female.gltf", role="Designer")
+    eng = _person("Engineer", -3.0, 3.0, seed=43, model="Casual3_Male.gltf", role="Engineer")
+    # Two stationary teammates = entities indexed on the live city map.
+    bg1 = _person("Analyst", 4.6, 3.0, seed=44, model="OldClassy_Male.gltf", role="Analyst")
+    bg2 = _person("Marketer", -4.2, -3.0, seed=45, model="Casual2_Male.gltf", role="Marketer")
+    _face(bg1, (0, 0)); _face(bg2, (0, 0))
+    actors = [
+        Actor("ceo", ceo, beats=[Hold(0, 20, "Idle"), Face(0.0, "eng"), Face(7.0, "des")]),
+        Actor("eng", eng, beats=[
+            Walk(0.4, 3.0, [(-3.0, 3.0), (0.0, 1.0), (1.4, -0.6)], "Walk"),
+            Face(3.4, "des"), Hold(3.4, 17, "Idle")]),
+        Actor("des", des, beats=[
+            Hold(0, 13.6, "Idle"), Face(3.0, "eng"),
+            Play(13.6, 3.0, "Victory"), Hold(16.6, 4, "Idle")]),
+        Actor("bg1", bg1, beats=[Hold(0, 20, "Idle")]),
+        Actor("bg2", bg2, beats=[Hold(0, 20, "Idle")]),
+    ]
+    shots = [
+        Shot.track(0.0, 3.4, target="eng", offset=(-2.6, 1.6, -2.4), look="eng", fov=38.0),
+        Shot.dolly(3.4, 3.4, frm=(1.4, 1.7, 2.8), to=(1.4, 1.6, 1.4), look="des", fov=(40, 32)),
+        Shot.orbit(6.8, 3.4, center=(0.7, 0.0, 0.2), radius=3.8, height=1.7, deg=(200, 330), fov=38.0),
+        Shot.dolly(10.2, 3.4, frm=(0.7, 1.7, 3.6), to=(0.7, 1.6, 2.2), look="eng", fov=(40, 31)),
+        Shot.dolly(13.6, 3.0, frm=(1.4, 1.7, 2.8), to=(1.4, 1.6, 1.6), look="des", fov=(40, 30)),
+        Shot.crane(16.6, 3.4, x=0.0, z=5.2, y=(2.0, 5.2), look=(0.5, 1.2, 0.0), fov=42.0),
+    ]
+    script = [
+        Narrate(0.4, 3.2, "First — Redis isn't our database. It's the agent's sense of space."),
+        Narrate(3.8, 3.2, "Every second the world streams every position into Redis."),
+        Say(7.2, 2.8, "Engineer", "Who's nearest the bug? ...Designer. On my way."),
+        Narrate(10.2, 3.2, "Geospatial queries — 'who's near me?' — answered in microseconds."),
+        Say(13.6, 2.8, "Designer", "Solved this last sprint. Here — take it."),
+        Narrate(16.6, 3.4, "And vector memory: every agent recalls what the whole team has learned."),
+    ]
+    return Scene(actors, shots, script=script, time_of_day="Afternoon", name="12_redis"), \
+        [ceo, eng, des, bg1, bg2]
+
+
+def _cut_weave():
+    """weave · END — Weave gives the world a conscience: it optimizes the agents itself."""
+    ceo = _ceo(-2.0, 1.6, face=(0.6, 0.6))
+    obs = _person("Observability", 0.6, 0.6, seed=51, model="OldClassy_Female.gltf", role="DevOps")
+    weak = _person("Engineer", 3.2, -1.0, seed=52, model="Casual2_Male.gltf", role="Engineer")
+    _face(obs, (-2.0, 1.6)); _face(weak, (0.6, 0.6))
+    team = [ceo, obs, weak]
+    actors = [
+        Actor("ceo", ceo, beats=[Hold(0, 23.4, "Idle"), Face(0.0, "obs"), Face(13.0, "weak")]),
+        Actor("obs", obs, beats=[
+            Hold(0, 13.6, "Idle"), Face(7.0, "weak"),
+            Play(13.6, 3.0, "Victory"), Hold(16.6, 7, "Idle")]),
+        Actor("weak", weak, beats=[Hold(0, 16.6, "Idle"), Play(16.6, 6.8, "Victory")]),
+    ]
+    for i, (x, z) in enumerate(((-3.2, -2.6), (2.2, -3.0))):
+        ch = _person(("Marketer", "Designer")[i], x, z, seed=53 + i,
+                     model=("Casual_Female.gltf", "Casual_Bald.gltf")[i],
+                     role=("Marketer", "Designer")[i])
+        _face(ch, (0, 0))
+        team.append(ch)
+        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 17.6, "Idle"), Play(17.6, 6, "Victory")]))
+    shots = [
+        Shot.dolly(0.0, 3.6, frm=(0.6, 1.7, 4.0), to=(0.6, 1.5, 2.4), look="obs", fov=(42, 33)),
+        Shot.orbit(3.6, 3.8, center=(0.3, 0.0, 0.6), radius=3.8, height=1.7, deg=(20, 150), fov=38.0),
+        Shot.dolly(7.4, 3.4, frm=(0.6, 1.7, 3.4), to=(0.6, 1.6, 2.1), look="obs", fov=(40, 31)),
+        Shot.dolly(10.8, 2.8, frm=(-2.0, 1.7, 3.2), to=(-2.0, 1.6, 2.0), look="ceo", fov=(40, 30)),
+        Shot.dolly(13.6, 3.4, frm=(3.2, 1.7, 2.6), to=(3.2, 1.6, 1.2), look="weak", fov=(40, 31)),
+        Shot.crane(17.0, 3.4, x=0.0, z=5.2, y=(2.0, 5.6), look=(0.4, 1.2, 0.0), fov=44.0),
+        Shot.orbit(20.4, 3.0, center=(0, 0, 0), radius=4.8, height=2.2, deg=(0, 150),
+                   fov=42.0, roll=(0, 3)),
+    ]
+    script = [
+        Narrate(0.4, 3.4, "Knowing where everyone is means nothing if the agents keep getting worse."),
+        Narrate(3.8, 3.6, "So Weave watches every decision — every call, every cost, every mistake."),
+        Say(7.6, 3.0, "Observability", "This one's burning cash for weak results."),
+        Say(10.8, 2.6, "You", "Then rewrite how it works."),
+        Narrate(13.6, 3.8, "An agent reads the company's own telemetry and fixes the weakest worker — itself."),
+        Narrate(17.6, 3.0, "In our demo, costs fell twenty-one percent. No human in the loop."),
+        Say(20.8, 2.6, "You", "Redis gives it a body. Weave gives it a conscience."),
+    ]
+    return Scene(actors, shots, script=script, time_of_day="Dusk", name="13_weave"), team
+
+
+# --------------------------------------------------------------------------- #
 # registry
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -333,11 +456,18 @@ CUTSCENES: dict[str, CutsceneDef] = {
     "campaign":    CutsceneDef("campaign",    "end",    "Run a marketing campaign",   _cut_campaign),
     "users1k":     CutsceneDef("users1k",     "end",    "Reach 1,000 users",          _cut_users1k),
     "profitable":  CutsceneDef("profitable",  "end",    "Turn profitable",            _cut_profitable),
+    # the standalone "how it works" demo reel (the 60-second pitch)
+    "chaos":       CutsceneDef("chaos",       "begin",  "The problem: agent chaos",   _cut_chaos),
+    "redis":       CutsceneDef("redis",       "middle", "Redis: the world's body",    _cut_redis),
+    "weave":       CutsceneDef("weave",       "end",    "Weave: the conscience",      _cut_weave),
 }
 
 # render order (chapter order through the quest line)
 ORDER = ["pitch", "customer", "competitors", "logo", "research",
          "meeting", "pricing", "campaign", "users1k", "profitable"]
+
+# the demo reel, in pitch order (problem → Redis → Weave)
+DEMO_ORDER = ["chaos", "redis", "weave"]
 
 
 def build(key: str) -> tuple[Scene, list]:
