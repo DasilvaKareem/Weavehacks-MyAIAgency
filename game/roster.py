@@ -13,6 +13,7 @@ ROLES = [
     ("Product Designer", "Design", pr.MAGENTA),      # Gemini image generation
     ("Graphic Designer", "Design", pr.PINK),         # Gemini image generation
     ("Animator", "Design", pr.PURPLE),               # Gemini Veo video generation
+    ("Film Director", "Design", pr.Color(90, 120, 160, 255)),  # directs cast+voiced cutscene films
     ("UX Researcher", "Design", pr.PINK),
     ("Marketing Lead", "Growth", pr.ORANGE),
     ("Blogger", "Growth", pr.BROWN),                 # Daytona: builds + publishes a real site
@@ -48,6 +49,7 @@ ROLE_RATES = {
     "Product Designer": 3_000,
     "Graphic Designer": 2_500,
     "Animator": 3_000,
+    "Film Director": 3_500,
     "UX Researcher": 2_500,
     "Marketing Lead": 3_000,
     "Blogger": 2_000,

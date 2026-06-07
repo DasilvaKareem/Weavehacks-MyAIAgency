@@ -44,6 +44,9 @@ def _local_tools(role: str, agent_id: str | None, agent_name: str) -> list:
         tools += load_hr_tools()
     if config.role_uses_blogger(role):
         tools += load_blogger_tools(agent_id, agent_name)
+    if config.role_uses_film(role):
+        from .film_tools import load_film_tools
+        tools += load_film_tools(agent_id, agent_name)
     if config.role_uses_vercel(role):
         tools += load_publish_tools(agent_id, agent_name)
     return tools
