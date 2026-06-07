@@ -400,6 +400,37 @@ class CompanyLink:
             self._chats[TERMINAL_ID] = term
         return term
 
+    # --- company drive (the terminal's Files browser) ---------------------
+
+    def drive_files(self) -> list:
+        """Every file on the shared company drive (FileRow rows, ordered by path),
+        for the terminal's Files view."""
+        return self.store.fs_list()
+
+    def drive_local_path(self, path: str = "") -> str | None:
+        """Real on-disk path for a drive virtual path (text mirror or asset
+        disk_path), or None if it isn't on disk. Used to open a file natively."""
+        from backend.company_fs import local_disk_path
+        return local_disk_path(self.store, path)
+
+    def drive_export(self, path: str, content: str | None) -> str | None:
+        """Ensure a drive file is on disk so it can be opened natively, writing the
+        text mirror if it's missing (old files predate the auto-mirror). Returns the
+        real path, or None for a binary asset with no on-disk copy."""
+        import os
+        existing = self.drive_local_path(path)
+        if existing or content is None:
+            return existing
+        dest = os.path.join(os.path.dirname(self.store.db_path), "drive",
+                            path.strip().lstrip("/"))
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w") as fh:
+                fh.write(content)
+            return os.path.abspath(dest)
+        except OSError:
+            return None
+
     def terminal_history(self) -> list[Message]:
         """The terminal transcript (Message-like rows with .role/.content)."""
         return self._terminal().history()

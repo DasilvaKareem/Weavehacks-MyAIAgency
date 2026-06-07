@@ -71,6 +71,14 @@ class TerminalPanel:
         self._hire = None
         # A verified-live URL from the latest reply, offered for one-press opening.
         self._open_url = None
+        # Files browser (Tab toggles it): the drive's files/assets, with preview.
+        self.screen = "chat"            # "chat" | "files"
+        self._files: list = []          # cached FileRow list
+        self._fsel = 0                  # selected file index
+        self._flisttop = 0              # first visible row (list scroll)
+        self._ftex: dict = {}           # disk_path -> Texture2D | None (image previews)
+        self._row_rects: list = []      # (index, Rectangle) for click-to-select
+        self._tab_rects: dict = {}      # "chat"/"files" -> Rectangle (clickable tabs)
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -84,6 +92,7 @@ class TerminalPanel:
         self._link_rects = []
         self._hire = None
         self._open_url = None
+        self.screen = "chat"
         while pr.get_char_pressed() > 0:    # drop the 'e' that opened the panel
             pass
         self._refresh()
@@ -99,6 +108,13 @@ class TerminalPanel:
         self._link_rects = []
         self._hire = None
         self._open_url = None
+        self._unload_ftex()
+
+    def _unload_ftex(self) -> None:
+        for tex in self._ftex.values():
+            if tex is not None:
+                pr.unload_texture(tex)
+        self._ftex = {}
 
     @property
     def capturing(self) -> bool:
@@ -138,6 +154,80 @@ class TerminalPanel:
             self.link.terminal_append("ai", "Hiring isn't available right now.")
         self._refresh()
 
+    # --- files browser -----------------------------------------------------
+
+    def _toggle_screen(self) -> None:
+        self.screen = "files" if self.screen == "chat" else "chat"
+        if self.screen == "files":
+            self._load_files()
+        while pr.get_char_pressed() > 0:        # swallow the Tab-adjacent char buffer
+            pass
+
+    def _load_files(self) -> None:
+        self._files = self.link.drive_files()
+        if self._fsel >= len(self._files):
+            self._fsel = max(0, len(self._files) - 1)
+        self._flisttop = 0
+
+    def _open_selected(self) -> None:
+        if not self._files:
+            return
+        f = self._files[self._fsel]
+        if f.kind == "webapp" and f.content:        # a pinned live URL
+            _open_externally(f.content)
+            self._status = f"opening {f.content[:42]}..."
+            return
+        disk = self.link.drive_export(f.path, f.content)   # materialize text if needed
+        if disk:
+            _open_externally(disk)                  # opens in the CEO's default Mac app
+            self._status = f"opening {f.name}"
+        else:
+            self._status = "no on-disk file to open"
+
+    def _update_files(self) -> None:
+        n = len(self._files)
+        wheel = pr.get_mouse_wheel_move()
+        if wheel:
+            self._flisttop = max(0, self._flisttop - int(wheel * 3))
+        if n:
+            if pr.is_key_pressed(pr.KEY_DOWN):
+                self._fsel = min(n - 1, self._fsel + 1)
+            if pr.is_key_pressed(pr.KEY_UP):
+                self._fsel = max(0, self._fsel - 1)
+        if pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT):
+            mp = pr.get_mouse_position()
+            for i, rect in self._row_rects:
+                if pr.check_collision_point_rec(mp, rect):
+                    if i == self._fsel:             # click the selected row again = open
+                        self._open_selected()
+                    else:
+                        self._fsel = i
+                    break
+        if pr.is_key_pressed(pr.KEY_ENTER) or pr.is_key_pressed(pr.KEY_O):
+            self._open_selected()
+        if pr.is_key_pressed(pr.KEY_R):             # refresh the listing
+            self._load_files()
+        if pr.is_key_pressed(pr.KEY_ESCAPE) or gamepad.pressed(gamepad.CIRCLE):
+            self.screen = "chat"                    # Esc backs out to chat, not close
+
+    def _file_texture(self, disk_path: str, max_w: int, max_h: int):
+        """Lazily load + cache an image asset as a GPU texture, scaled to fit the
+        preview pane. Loaded in draw() (main thread owns the GL context)."""
+        if disk_path in self._ftex:
+            return self._ftex[disk_path]
+        import os
+        tex = None
+        if disk_path and os.path.isfile(disk_path):
+            img = pr.load_image(disk_path)
+            if img.width > 0 and img.height > 0:
+                scale = min(1.0, max_w / img.width, max_h / img.height)
+                if scale < 1.0:
+                    pr.image_resize(img, int(img.width * scale), int(img.height * scale))
+                tex = pr.load_texture_from_image(img)
+            pr.unload_image(img)
+        self._ftex[disk_path] = tex
+        return tex
+
     # --- push-to-talk ------------------------------------------------------
 
     def _update_voice(self) -> None:
@@ -161,6 +251,23 @@ class TerminalPanel:
 
     def update(self) -> None:
         if not self.open:
+            return
+
+        # Tab (or clicking a header tab) switches between the chat and Files browser.
+        if pr.is_key_pressed(pr.KEY_TAB):
+            self._toggle_screen()
+            return
+        if pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT):
+            mp = pr.get_mouse_position()
+            for name, rect in self._tab_rects.items():
+                if pr.check_collision_point_rec(mp, rect):
+                    if self.screen != name:
+                        self.screen = name
+                        if name == "files":
+                            self._load_files()
+                    return
+        if self.screen == "files":
+            self._update_files()
             return
 
         wheel = pr.get_mouse_wheel_move()
@@ -302,7 +409,14 @@ class TerminalPanel:
         pr.draw_text(status, x + w - PAD - sw_t, y + 20, 18, sc)
         sub = "delegates your orders to the team and gets it done"
         pr.draw_text(sub, x + PAD, y + 46, 15, GREEN_DIM)
+        self._draw_tabs(x, y + 42, w)
         pr.draw_line(x + PAD, y + 70, x + w - PAD, y + 70, GREEN_FAINT)
+
+        # The Files browser replaces the chat body/input when active.
+        if self.screen == "files":
+            self._draw_files(x, y, w, h)
+            self._draw_scanlines(x, y, w, h)
+            return
 
         # --- transcript body ---
         body_top = y + 84
@@ -374,10 +488,95 @@ class TerminalPanel:
             pr.draw_text(self.input + caret, x + PAD + pw, input_y, FONT, AMBER)
 
         talk = "hold Ctrl talk" if voice.available() else "(mic off)"
-        hint = f"ENTER send   ·   {talk}   ·   scroll: history   ·   ESC close"
+        hint = f"ENTER send   ·   {talk}   ·   TAB files   ·   ESC close"
         pr.draw_text(hint, x + PAD, y + h - 26, 14, GREEN_DIM)
 
         self._draw_scanlines(x, y, w, h)
+
+    # --- files browser draw ------------------------------------------------
+
+    def _draw_tabs(self, x: int, y: int, w: int) -> None:
+        """Clickable [ CHAT ] [ FILES ] tabs at the top-right of the header."""
+        self._tab_rects = {}
+        tx = x + w - PAD
+        for name, lab in (("files", "FILES"), ("chat", "CHAT")):   # right-to-left
+            txt = f" {lab} "
+            tw = pr.measure_text(txt, 16) + 8
+            rect = pr.Rectangle(tx - tw, y, tw, 23)
+            active = (self.screen == name)
+            pr.draw_rectangle_rec(rect, pr.Color(22, 54, 34, 255) if active else SCREEN)
+            pr.draw_rectangle_lines_ex(rect, 1, GREEN if active else GREEN_FAINT)
+            pr.draw_text(txt, int(rect.x + 4), int(rect.y + 3), 16,
+                         GREEN if active else GREEN_DIM)
+            self._tab_rects[name] = rect
+            tx -= tw + 8
+
+    def _draw_files(self, x: int, y: int, w: int, h: int) -> None:
+        top = y + 84
+        bottom = y + h - 46
+        list_w = int((w - 3 * PAD) * 0.46)
+        list_x = x + PAD
+        prev_x = list_x + list_w + PAD
+        prev_w = x + w - PAD - prev_x
+        files = self._files
+        self._row_rects = []
+
+        if not files:
+            pr.draw_text("Drive is empty — files agents save will show up here.",
+                         list_x, top, FONT, GREEN_FAINT)
+        else:
+            rows = max(1, (bottom - top) // LINE_H)
+            if self._fsel < self._flisttop:
+                self._flisttop = self._fsel
+            elif self._fsel >= self._flisttop + rows:
+                self._flisttop = self._fsel - rows + 1
+            self._flisttop = max(0, min(self._flisttop, max(0, len(files) - rows)))
+            ty = top
+            for i in range(self._flisttop, min(len(files), self._flisttop + rows)):
+                f = files[i]
+                rect = pr.Rectangle(list_x - 4, ty - 2, list_w + 8, LINE_H)
+                self._row_rects.append((i, rect))
+                if i == self._fsel:
+                    pr.draw_rectangle_rec(rect, pr.Color(22, 54, 34, 255))
+                label = f"[{f.kind}] {f.path}"
+                while label and pr.measure_text(label, 17) > list_w - 12:
+                    label = label[:-2]
+                pr.draw_text(label, list_x, ty, 17, GREEN if i == self._fsel else GREEN_DIM)
+                ty += LINE_H
+            pr.draw_text(f"{len(files)} file(s)", list_x, bottom + 6, 13, GREEN_FAINT)
+            pr.draw_line(prev_x - PAD // 2, top, prev_x - PAD // 2, bottom, GREEN_FAINT)
+            self._draw_preview(files[self._fsel], prev_x, top, prev_w, bottom - top)
+
+        footer = self._status or "↑↓ select   ·   Enter / O open on your computer   ·   R refresh   ·   Tab chat   ·   Esc back"
+        pr.draw_text(footer, list_x, y + h - 26, 14,
+                     AMBER if self._status else GREEN_DIM)
+
+    def _draw_preview(self, f, px: int, py: int, pw: int, ph: int) -> None:
+        pr.draw_text(f.path, px, py, 17, GREEN)
+        meta = f"{f.kind} · {f.size}c · by {f.author_name} · {f.updated_at}"
+        for wl in _wrap(meta, pw, 14)[:1]:
+            pr.draw_text(wl, px, py + 22, 14, GREEN_FAINT)
+        cy = py + 48
+        if f.kind == "image":
+            disk = self.link.drive_local_path(f.path)
+            tex = self._file_texture(disk, pw, ph - 90) if disk else None
+            if tex is not None:
+                pr.draw_texture(tex, int(px), int(cy), pr.WHITE)
+            else:
+                pr.draw_text("[image — press Enter / O to open]", px, cy, 15, GREEN_FAINT)
+        elif f.kind == "webapp" and f.content:
+            pr.draw_text("Live link:", px, cy, 15, GREEN_DIM)
+            for wl in _wrap(f.content, pw, 16):
+                cy += 22
+                pr.draw_text(wl, px, cy, 16, LINK)
+        elif f.content:
+            avail = max(1, (py + ph - 24 - cy) // 20)
+            for wl in _wrap(f.content, pw, 16)[:avail]:
+                pr.draw_text(wl, px, cy, 16, GREEN)
+                cy += 20
+        else:
+            pr.draw_text("Binary file — press Enter / O to open in your Mac apps.",
+                         px, cy, 15, GREEN_FAINT)
 
     def _draw_body_line(self, line: str, color, x: int, ty: int) -> bool:
         """Draw one transcript line; render any URL underlined + clickable. Records

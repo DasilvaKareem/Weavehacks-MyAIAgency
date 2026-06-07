@@ -128,6 +128,28 @@ def _badge(f: FileRow) -> str:
     return f"  {f.path}  [{tag}] by {f.author_name} · updated {f.updated_at}"
 
 
+def local_disk_path(store, path: str = "") -> str | None:
+    """Resolve a company-drive virtual path to a REAL on-disk path, or None.
+
+    Text files are mirrored by fs_write to workspaces/<slug>/drive/<path>; binary
+    assets carry their own `disk_path`. A folder resolves to its index.html when
+    present (so a built site opens rendered); '' resolves to the drive root folder.
+    """
+    import os
+    drive_root = os.path.join(os.path.dirname(store.db_path), "drive")
+    norm = (path or "").strip().lstrip("/")
+    disk = os.path.join(drive_root, norm) if norm else drive_root
+    if os.path.isdir(disk):
+        idx = os.path.join(disk, "index.html")
+        if os.path.exists(idx):
+            disk = idx
+    if os.path.exists(disk):
+        return os.path.abspath(disk)
+    row = store.fs_get("/" + norm) if norm else None
+    dp = getattr(row, "disk_path", None) if row else None
+    return os.path.abspath(dp) if dp and os.path.exists(dp) else None
+
+
 def load_fs_tools(author_id: str | None = None, author_name: str = "CEO") -> list:
     """LangChain `drive_*` tools bound to one author (the calling agent).
 

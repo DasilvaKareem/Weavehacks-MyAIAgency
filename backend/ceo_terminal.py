@@ -262,22 +262,12 @@ class CompanyTerminal:
             for a built website folder, point at its index.html and it opens in the
             browser. Pass '' to open the whole drive folder in Finder. Use this when
             the CEO asks to open, see, or preview a file/site you saved to the drive."""
-            drive_root = os.path.join(os.path.dirname(self.store.db_path), "drive")
-            norm = (path or "").strip().lstrip("/")
-            disk = os.path.join(drive_root, norm) if norm else drive_root
-            if os.path.isdir(disk):                 # a folder → prefer its index.html
-                idx = os.path.join(disk, "index.html")
-                if os.path.exists(idx):
-                    disk = idx
-            if not os.path.exists(disk):            # maybe a registered binary asset
-                row = self.store.fs_get("/" + norm) if norm else None
-                dp = getattr(row, "disk_path", None) if row else None
-                if dp and os.path.exists(dp):
-                    disk = dp
-                else:
-                    return (f"No file on disk for {('/' + norm) or '/'}. Save it to "
-                            "the drive first (drive_write), then link it.")
-            url = "file://" + urllib.parse.quote(os.path.abspath(disk))
+            from .company_fs import local_disk_path
+            disk = local_disk_path(self.store, path)
+            if not disk:
+                return (f"No file on disk for {('/' + path.strip().lstrip('/')) or '/'}. "
+                        "Save it to the drive first (drive_write), then link it.")
+            url = "file://" + urllib.parse.quote(disk)
             return f"Open it on your computer: {url}"
 
         return local_link

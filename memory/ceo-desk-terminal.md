@@ -40,7 +40,16 @@ disk files by `store.fs_write` → `workspaces/<slug>/drive/<path>` (e.g. a buil
 `file://` link to that real file (folder → its index.html; `''` → drive root in
 Finder), so the CEO can open saved files/sites locally — no server needed.
 `_verify_urls` existence-checks `file://` links and strips dead ones just like web
-URLs. Drive browsing already works via `load_fs_tools` (drive_list/read/search).
+URLs. Drive browsing also works via `load_fs_tools` (drive_list/read/search).
+
+**In-terminal Files browser:** the terminal panel has a second screen — **Tab**
+toggles chat ↔ **Files** (also clickable `[CHAT]`/`[FILES]` header tabs). It lists
+every drive file (`CompanyLink.drive_files` → `store.fs_list`), with a preview pane:
+text shows content, images render a cached thumbnail (`_file_texture`), webapp shows
+the live URL. **Enter/O/click-selected** opens the file natively via
+`_open_externally` → `CompanyLink.drive_export` (which materializes old DB-only text
+files to the disk mirror first). Shared resolver: `backend.company_fs.local_disk_path`
+(used by both the `local_link` tool and the panel). ↑↓ select, R refresh, Esc → chat.
 
 **Hire from the terminal:** `hire_agent(role)` is a *proposal* tool — it only sets
 `CompanyTerminal.pending_hire`; it can't spend money. The game polls it
