@@ -1,19 +1,21 @@
-"""A library of 10 cutscenes, one per flagship to-do in the quest line.
+"""A library of 10 cutscenes, one per to-do — now with narration + dialogue.
 
-Each entry is a `CutsceneDef`: the to-do `key` it belongs to, a `trigger`
-saying *when* in that to-do it should play (begin / middle / end), and a builder
-that returns a ready-to-record `cinematic.Scene` plus the Characters it animates.
+Each entry is a `CutsceneDef`: the to-do `key` it punctuates, a `trigger` for
+*when* it plays (begin / middle / end), and a builder returning a ready-to-record
+`cinematic.Scene` plus the Characters it animates.
 
-The to-dos themselves live in game/tasks.py; these are the cinematic punctuation
-for the big ones — naming the company, winning over Robin, the seed check, the
-first office, the first hire, launch day, and the Series A win. They're authored
-in the office interior (the reliable standalone world); pointing one at the city
-is just a different `draw_world` callback at record time — the engine doesn't
-care.
+Every cutscene carries a `script` track: `Narrate(...)` lines are voiceover
+(centered, top) and `Say(speaker, ...)` lines are character dialogue (lower-third
+subtitle). The two can overlap — a narrator under a character's line.
+
+This is a *different* slate from the first pass (the founder-arc beats): this set
+follows the build itself — pitch, customer, competition, brand, research, the
+first all-hands, pricing, the campaign, the 1,000-user milestone, profitability.
+All are authored in the office interior; pointing one at the city is just a
+different `draw_world` callback at record time.
 
     from game import cutscenes
-    scene, chars = cutscenes.build("series_a")
-    # ...hand (scene, chars) to the recorder in cinematic_demo.py
+    scene, chars = cutscenes.build("meeting")
 """
 from __future__ import annotations
 
@@ -26,10 +28,8 @@ import pyray as pr
 
 from . import config, roster
 from .entities import Character
-from .cinematic import Actor, Shot, Caption, Scene, Walk, Hold, Play, Face
+from .cinematic import (Actor, Shot, Scene, Walk, Hold, Play, Face, Say, Narrate)
 
-# A spread of office-appropriate models; missing files fall back to colored boxes,
-# so this list is safe even if a pack is trimmed.
 _MODELS = [
     "Casual_Male.gltf", "Casual2_Female.gltf", "Casual3_Male.gltf",
     "Casual_Female.gltf", "Casual2_Male.gltf", "Casual3_Female.gltf",
@@ -40,7 +40,6 @@ _MODELS = [
 
 def _person(name: str, x: float, z: float, *, seed: int,
             model: str | None = None, role: str = "") -> Character:
-    """A tinted Character at (x, z), seeded so its look is varied but reproducible."""
     m = model or _MODELS[seed % len(_MODELS)]
     ch = Character(name=name, role=role, x=x, z=z, color=pr.SKYBLUE, model=m)
     roster.apply_look(ch, roster.random_look(random.Random(seed * 7 + 13)))
@@ -48,7 +47,6 @@ def _person(name: str, x: float, z: float, *, seed: int,
 
 
 def _ring(n: int, radius: float, center=(0.0, 0.0), start_deg=0.0):
-    """n evenly spaced (x, z) points on a circle — for crowd blocking."""
     out = []
     for i in range(n):
         a = math.radians(start_deg + 360.0 * i / n)
@@ -56,210 +54,261 @@ def _ring(n: int, radius: float, center=(0.0, 0.0), start_deg=0.0):
     return out
 
 
-def _face_center(ch: Character, center=(0.0, 0.0)) -> None:
-    ch.yaw = math.degrees(math.atan2(center[0] - ch.x, center[1] - ch.z))
+def _face(ch: Character, target=(0.0, 0.0)) -> None:
+    ch.yaw = math.degrees(math.atan2(target[0] - ch.x, target[1] - ch.z))
+
+
+# A CEO at a spot, facing a point — every scene has one.
+def _ceo(x=0.0, z=0.0, face=(0.0, 1.0)) -> Character:
+    c = _person("You (CEO)", x, z, seed=1, model="Casual_Male.gltf", role="CEO")
+    _face(c, face)
+    return c
 
 
 # --------------------------------------------------------------------------- #
-# the 10 cutscenes
+# the 10 cutscenes  (build the product → grow → profit)
 # --------------------------------------------------------------------------- #
-def _cut_name():
-    """name · BEGIN — the founder alone in an empty room, before anything exists."""
-    ceo = _person("You (CEO)", 0.0, 0.0, seed=1, model="Casual_Male.gltf", role="CEO")
-    a = Actor("ceo", ceo, beats=[Hold(0, 11, "Idle"), Play(8.0, 3.0, "Victory")])
+def _cut_pitch():
+    """pitch · BEGIN — the founder alone, finding the one sentence."""
+    ceo = _ceo(0.0, 0.0, face=(0.0, 6.0))
+    a = Actor("ceo", ceo, beats=[Hold(0, 14, "Idle"), Play(10.5, 3.5, "Victory")])
     shots = [
-        Shot.crane(0.0, 4.0, x=0.0, z=4.6, y=(1.3, 4.2), look="ceo", fov=40.0,
-                   caption=("", "CHAPTER ONE")),
-        Shot.dolly(4.0, 3.6, frm=(0.0, 1.6, 4.6), to=(0.0, 1.6, 2.3), look="ceo",
-                   fov=(42.0, 30.0), caption=("", "Name your company.")),
-        Shot.static(7.6, 3.0, pos=(2.3, 1.7, 2.6), look="ceo", fov=34.0,
-                    caption=("", "Every empire needs a name.")),
+        Shot.crane(0.0, 4.0, x=0.0, z=4.6, y=(1.3, 4.0), look="ceo", fov=40.0),
+        Shot.dolly(4.0, 4.0, frm=(0.0, 1.6, 4.6), to=(0.0, 1.6, 2.4), look="ceo", fov=(42, 31)),
+        Shot.static(8.0, 3.0, pos=(2.2, 1.7, 2.6), look="ceo", fov=34.0),
+        Shot.dolly(11.0, 3.0, frm=(0.0, 1.7, 3.2), to=(0.0, 1.6, 2.1), look="ceo", fov=(36, 30)),
     ]
-    return Scene([a], shots, time_of_day="Morning", name="01_name"), [ceo]
+    script = [
+        Narrate(0.4, 3.2, "Day one. No team, no money — just an idea in your head."),
+        Say(4.2, 3.0, "You", "Okay... what do we actually do?"),
+        Narrate(7.4, 3.0, "Say it in one sentence. If you can't, you don't have it yet."),
+        Say(10.6, 3.2, "You", "\"We build AI agents that run your company.\""),
+    ]
+    return Scene([a], shots, script=script, time_of_day="Morning", name="01_pitch"), [ceo]
 
 
-def _cut_cofounder():
-    """cofounder · MIDDLE — Robin walks over and throws in with you."""
-    ceo = _person("You (CEO)", -1.6, 0.6, seed=1, model="Casual_Male.gltf", role="CEO")
-    robin = _person("Robin", 3.4, 0.6, seed=4, model="OldClassy_Female.gltf", role="Co-founder")
-    ceo_a = Actor("ceo", ceo, beats=[
-        Hold(0, 12, "Idle"), Face(4.6, "robin"), Play(7.2, 3.0, "Victory")])
-    robin_a = Actor("robin", robin, beats=[
-        Hold(0, 1.2, "Idle"),
-        Walk(1.2, 3.2, [(3.4, 0.6), (0.4, 0.6)], "Walk"),
-        Face(4.6, "ceo"), Hold(4.6, 7.4, "Idle")])
+def _cut_customer():
+    """customer · MIDDLE — you and Robin argue out who it's really for."""
+    ceo = _ceo(-1.4, 0.6, face=(3.0, 0.6))
+    robin = _person("Robin", 3.2, 0.6, seed=4, model="OldClassy_Female.gltf", role="Co-founder")
+    _face(robin, (-1.4, 0.6))
+    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 14, "Idle"), Face(0.0, "robin")])
+    robin_a = Actor("robin", robin, beats=[Hold(0, 14, "Idle"), Face(0.0, "ceo")])
     shots = [
-        Shot.static(0.0, 2.6, pos=(0.6, 1.7, 5.2), look="robin", fov=40.0,
-                    caption=("", "Win over co-founder Robin")),
-        Shot.track(2.6, 2.4, target="robin", offset=(-2.4, 1.6, 2.6), look="robin", fov=38.0),
-        Shot.orbit(5.0, 3.4, center=(-0.6, 0.0, 0.6), radius=3.8, height=1.7,
-                   deg=(200.0, 320.0), fov=36.0, caption=("ROBIN", "Alright. I'm in.")),
-        Shot.dolly(8.4, 3.0, frm=(-0.6, 1.7, 3.4), to=(-0.6, 1.6, 2.2), look="ceo",
-                   fov=(40.0, 31.0)),
+        Shot.static(0.0, 3.0, pos=(0.8, 1.7, 4.8), look=(0.6, 1.2, 0.6), fov=40.0),
+        Shot.orbit(3.0, 4.0, center=(0.6, 0.0, 0.6), radius=3.8, height=1.7,
+                   deg=(210.0, 320.0), fov=37.0),
+        Shot.dolly(7.0, 3.4, frm=(3.2, 1.7, 3.6), to=(3.2, 1.6, 2.2), look="robin", fov=(40, 31)),
+        Shot.dolly(10.4, 3.4, frm=(-1.4, 1.7, 3.4), to=(-1.4, 1.6, 2.1), look="ceo", fov=(40, 30)),
     ]
-    return Scene([ceo_a, robin_a], shots, time_of_day="Dusk", name="02_cofounder"), [ceo, robin]
+    script = [
+        Narrate(0.4, 3.0, "Every product is for someone. The trick is naming who."),
+        Say(3.6, 3.0, "Robin", "So who's this actually for?"),
+        Say(7.0, 3.2, "You", "Founders. People drowning in busywork."),
+        Say(10.6, 3.2, "Robin", "Then build it for them. Only them."),
+    ]
+    return Scene([ceo_a, robin_a], shots, script=script, time_of_day="Afternoon",
+                 name="02_customer"), [ceo, robin]
 
 
-def _cut_seed():
-    """seed · END — the angel writes the first check."""
-    ceo = _person("You (CEO)", -0.8, 1.0, seed=1, model="Casual_Male.gltf", role="CEO")
-    angel = _person("Angel", 1.6, 1.0, seed=6, model="OldClassy_Male.gltf", role="Investor")
-    ceo_a = Actor("ceo", ceo, beats=[
-        Hold(0, 12, "Idle"), Face(0.2, "angel"), Play(6.6, 3.4, "Victory")])
-    angel_a = Actor("angel", angel, beats=[
-        Face(0, "ceo"), Hold(0, 4.0, "Idle"), Play(4.0, 2.2, "PickUp"), Hold(6.2, 6, "Idle")])
+def _cut_competitors():
+    """competitors · END — the analyst lays out the field."""
+    ceo = _ceo(-2.0, 1.0, face=(0.0, -0.4))
+    analyst = _person("Analyst", 0.2, -0.4, seed=7, model="OldClassy_Male.gltf", role="Analyst")
+    _face(analyst, (-2.0, 1.0))
+    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 13, "Idle")])
+    an_a = Actor("analyst", analyst, beats=[Hold(0, 13, "Idle")])
     shots = [
-        Shot.orbit(0.0, 3.4, center=(0.4, 0.0, 1.0), radius=3.6, height=1.6,
-                   deg=(40.0, 150.0), fov=37.0, caption=("", "Raise your seed money")),
-        Shot.dolly(3.4, 3.2, frm=(1.6, 1.7, 4.2), to=(1.6, 1.5, 2.6), look="angel",
-                   fov=(40.0, 32.0), caption=("ANGEL", "Let's make it official.")),
-        Shot.dolly(6.6, 3.4, frm=(-0.8, 1.7, 3.4), to=(-0.8, 1.6, 2.1), look="ceo",
-                   fov=(40.0, 29.0), roll=(0.0, -3.0), caption=("", "+ $10,000 seed")),
+        Shot.dolly(0.0, 3.2, frm=(0.2, 1.8, 4.2), to=(0.2, 1.5, 2.4), look="analyst", fov=(42, 33)),
+        Shot.orbit(3.2, 3.8, center=(-0.9, 0.0, 0.3), radius=3.6, height=1.6,
+                   deg=(20.0, 140.0), fov=37.0),
+        Shot.dolly(7.0, 3.0, frm=(-2.0, 1.7, 3.2), to=(-2.0, 1.6, 2.0), look="ceo", fov=(40, 31)),
+        Shot.static(10.0, 3.0, pos=(2.0, 1.7, 2.6), look="ceo", fov=35.0),
     ]
-    return Scene([ceo_a, angel_a], shots, time_of_day="Afternoon", name="03_seed"), [ceo, angel]
+    script = [
+        Narrate(0.4, 3.0, "You're not the first. Know exactly who you're up against."),
+        Say(3.6, 3.2, "Analyst", "Three big players. All slow, all bloated."),
+        Say(7.2, 3.0, "You", "Then we win on speed."),
+        Narrate(10.4, 2.6, "Find the gap they're too big to see."),
+    ]
+    return Scene([ceo_a, an_a], shots, script=script, time_of_day="Noon",
+                 name="03_competitors"), [ceo, analyst]
 
 
-def _cut_office():
-    """office · BEGIN — you walk into the empty office you just leased."""
-    ceo = _person("You (CEO)", 4.0, 5.6, seed=1, model="Casual_Male.gltf", role="CEO")
-    ceo_a = Actor("ceo", ceo, beats=[
-        Hold(0, 1.0, "Idle"),
-        Walk(1.0, 4.0, [(4.0, 5.6), (1.6, 2.8), (0.0, 0.6)], "Walk"),
-        Hold(5.0, 2.4, "Idle"), Play(7.4, 3.2, "Victory")])
+def _cut_logo():
+    """logo · MIDDLE — you brief the designer on the mark."""
+    ceo = _ceo(-1.8, 0.8, face=(0.4, 0.8))
+    des = _person("Designer", 0.6, 0.8, seed=5, model="Casual3_Female.gltf", role="Designer")
+    _face(des, (-1.8, 0.8))
+    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 12, "Idle")])
+    des_a = Actor("des", des, beats=[Hold(0, 7.5, "Idle"), Play(7.5, 3, "Victory"), Hold(10.5, 2, "Idle")])
     shots = [
-        Shot.static(0.0, 3.0, pos=(6.8, 6.2, 7.6), look=(0.0, 1.0, 1.5), fov=44.0,
-                    caption=("", "Lease your first office")),
-        Shot.track(3.0, 2.6, target="ceo", offset=(2.4, 1.7, 3.0), look="ceo", fov=38.0),
-        Shot.orbit(5.6, 3.0, center="ceo", radius=3.8, height=1.8, deg=(20.0, 150.0),
-                   fov=37.0),
-        Shot.crane(8.6, 2.4, x=0.0, z=3.4, y=(1.6, 3.6), look="ceo", fov=36.0,
-                   caption=("", "Home.")),
+        Shot.static(0.0, 2.8, pos=(0.0, 1.7, 4.6), look=(-0.6, 1.2, 0.8), fov=39.0),
+        Shot.dolly(2.8, 3.2, frm=(-1.8, 1.7, 3.2), to=(-1.8, 1.6, 2.1), look="ceo", fov=(40, 31)),
+        Shot.dolly(6.0, 3.2, frm=(0.6, 1.7, 3.4), to=(0.6, 1.6, 2.2), look="des", fov=(40, 31)),
+        Shot.orbit(9.2, 3.0, center=(-0.6, 0.0, 0.8), radius=3.4, height=1.7, deg=(150, 30), fov=36.0),
     ]
-    return Scene([ceo_a], shots, time_of_day="Morning", name="04_office"), [ceo]
+    script = [
+        Narrate(0.4, 2.4, "A brand starts with a single image."),
+        Say(3.0, 3.0, "You", "Make it clean. One mark, unforgettable."),
+        Say(6.2, 2.8, "Designer", "Give me a day."),
+        Say(9.4, 2.6, "Designer", "...make it two."),
+    ]
+    return Scene([ceo_a, des_a], shots, script=script, time_of_day="Afternoon",
+                 name="04_logo"), [ceo, des]
 
 
-def _cut_intern():
-    """intern · MIDDLE — your first intern jogs in, eager to start."""
-    ceo = _person("You (CEO)", -0.6, 0.4, seed=1, model="Casual_Male.gltf", role="CEO")
-    intern = _person("Intern", 4.2, -3.0, seed=2, model="Casual2_Male.gltf", role="Intern")
-    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 11, "Idle"), Face(4.4, "intern")])
-    intern_a = Actor("intern", intern, beats=[
-        Hold(0, 0.8, "Idle"),
-        Walk(0.8, 3.4, [(4.2, -3.0), (1.8, -0.6), (1.0, 0.4)], "Run"),
-        Face(4.4, "ceo"), Play(4.6, 2.6, "Victory"), Hold(7.2, 4, "Idle")])
+def _cut_research():
+    """research · MIDDLE — the researcher comes back with the verdict."""
+    ceo = _ceo(-1.6, 1.0, face=(0.6, -0.2))
+    res = _person("Researcher", 4.0, -2.6, seed=8, model="Casual_Female.gltf", role="Researcher")
+    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 13, "Idle"), Face(3.6, "res")])
+    res_a = Actor("res", res, beats=[
+        Walk(0.4, 2.8, [(4.0, -2.6), (1.2, 0.2)], "Walk"), Face(3.4, "ceo"), Hold(3.4, 10, "Idle")])
     shots = [
-        Shot.static(0.0, 2.4, pos=(2.4, 1.6, -5.0), look="intern", fov=40.0,
-                    caption=("", "Take on your first intern")),
-        Shot.track(2.4, 2.6, target="intern", offset=(-2.2, 1.6, -2.4), look="intern", fov=37.0),
-        Shot.orbit(5.0, 3.2, center=(0.2, 0.0, 0.4), radius=3.6, height=1.7,
-                   deg=(150.0, 30.0), fov=36.0, caption=("INTERN", "Where do I start?")),
-        Shot.dolly(8.2, 2.8, frm=(-0.6, 1.7, 3.0), to=(-0.6, 1.6, 2.0), look="ceo", fov=(40, 31)),
+        Shot.track(0.0, 3.2, target="res", offset=(-2.2, 1.6, -2.2), look="res", fov=38.0),
+        Shot.orbit(3.2, 3.6, center=(-0.5, 0.0, 0.4), radius=3.6, height=1.7, deg=(150, 40), fov=37.0),
+        Shot.dolly(6.8, 3.2, frm=(0.6, 1.7, 3.4), to=(0.6, 1.6, 2.2), look="res", fov=(40, 31)),
+        Shot.dolly(10.0, 3.0, frm=(-1.6, 1.7, 3.2), to=(-1.6, 1.6, 2.0), look="ceo", fov=(40, 30)),
     ]
-    return Scene([ceo_a, intern_a], shots, time_of_day="Noon", name="05_intern"), [ceo, intern]
-
-
-def _cut_engineer():
-    """engineer · END — your first engineer sits down and gets to work."""
-    ceo = _person("You (CEO)", -2.2, 1.0, seed=1, model="Casual_Male.gltf", role="CEO")
-    eng = _person("Engineer", 0.0, -0.4, seed=3, model="Casual3_Male.gltf", role="Engineer")
-    ceo_a = Actor("ceo", ceo, beats=[Face(0, "eng"), Hold(0, 11, "Idle"), Play(7.5, 3, "Victory")])
-    eng_a = Actor("eng", eng, beats=[
-        Hold(0, 1.6, "Idle"), Play(1.6, 2.0, "SitDown", loop=False), Hold(3.6, 8, "Idle")])
-    shots = [
-        Shot.dolly(0.0, 3.0, frm=(0.0, 1.8, 4.4), to=(0.0, 1.5, 2.4), look="eng",
-                   fov=(42, 33), caption=("", "Hire your first engineer")),
-        Shot.orbit(3.0, 3.4, center=(-1.0, 0.0, 0.3), radius=3.6, height=1.6,
-                   deg=(20.0, 150.0), fov=37.0, caption=("ENGINEER", "Someone has to build it.")),
-        Shot.dolly(6.4, 3.6, frm=(-2.2, 1.7, 3.2), to=(-2.2, 1.6, 2.0), look="ceo", fov=(40, 30)),
+    script = [
+        Say(0.6, 2.6, "Researcher", "I talked to forty users this week."),
+        Say(3.6, 2.0, "You", "And?"),
+        Say(6.0, 2.4, "Researcher", "They'd pay. Today."),
+        Narrate(9.0, 3.4, "Validation — the rarest currency a startup ever holds."),
     ]
-    return Scene([ceo_a, eng_a], shots, time_of_day="Afternoon", name="06_engineer"), [ceo, eng]
+    return Scene([ceo_a, res_a], shots, script=script, time_of_day="Morning",
+                 name="05_research"), [ceo, res]
 
 
-def _cut_website():
-    """website · END — launch day; the small team celebrates the site going live."""
-    pts = _ring(3, 1.7, start_deg=20.0)
-    ceo = _person("You (CEO)", 0.0, 0.0, seed=1, model="Casual_Male.gltf", role="CEO")
+def _cut_meeting():
+    """meeting · END — the first all-hands, four voices in one room."""
+    ceo = _ceo(0.0, 1.8, face=(0.0, -1.0))
+    pts = [(-2.4, -0.6), (0.0, -1.4), (2.4, -0.6)]
+    names = [("Engineer", "Casual3_Male.gltf"), ("Designer", "Casual3_Female.gltf"),
+             ("Marketer", "Casual2_Male.gltf")]
     team = [ceo]
-    actors = [Actor("ceo", ceo, beats=[Hold(0, 11, "Idle"), Play(5.5, 3.5, "Victory")])]
-    for i, (x, z) in enumerate(pts):
-        ch = _person(f"Team{i}", x, z, seed=10 + i)
-        _face_center(ch)
+    actors = [Actor("ceo", ceo, beats=[Hold(0, 17, "Idle"), Play(13.5, 3.5, "Victory")])]
+    for i, ((x, z), (nm, mdl)) in enumerate(zip(pts, names)):
+        ch = _person(nm, x, z, seed=11 + i, model=mdl, role=nm)
+        _face(ch, (0.0, 1.8))
         team.append(ch)
-        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 5.4, "Idle"), Play(5.4, 4, "Victory")]))
+        actors.append(Actor(nm.lower(), ch, beats=[Hold(0, 13.5, "Idle"), Play(13.5, 4, "Victory")]))
     shots = [
-        Shot.crane(0.0, 3.2, x=0.0, z=5.0, y=(4.4, 1.9), look=(0, 1, 0), fov=42.0,
-                   caption=("", "Launch your website")),
-        Shot.orbit(3.2, 3.6, center=(0, 0, 0), radius=4.4, height=1.9, deg=(0.0, 140.0),
-                   fov=40.0),
-        Shot.dolly(6.8, 3.4, frm=(0.0, 1.8, 4.6), to=(0.0, 1.6, 2.6), look="ceo",
-                   fov=(42, 31), caption=("", "We're live.")),
+        Shot.crane(0.0, 3.4, x=0.0, z=5.2, y=(4.6, 2.0), look=(0, 1, -0.2), fov=44.0),
+        Shot.dolly(3.4, 3.0, frm=(0.0, 1.8, 4.4), to=(0.0, 1.6, 2.8), look="ceo", fov=(42, 33)),
+        Shot.dolly(6.4, 2.6, frm=(-2.4, 1.6, 1.4), to=(-2.4, 1.6, 0.8), look="engineer", fov=36.0),
+        Shot.dolly(9.0, 2.6, frm=(2.4, 1.6, 1.4), to=(2.4, 1.6, 0.8), look="marketer", fov=36.0),
+        Shot.orbit(11.6, 3.0, center=(0, 0, 0.4), radius=4.4, height=2.0, deg=(0, 150), fov=42.0),
+        Shot.dolly(14.6, 2.4, frm=(0.0, 1.8, 4.2), to=(0.0, 1.6, 2.6), look="ceo", fov=(40, 32)),
     ]
-    return Scene(actors, shots, time_of_day="Dusk", name="07_website"), team
+    script = [
+        Narrate(0.4, 3.0, "The whole company — all of it — in one room."),
+        Say(3.6, 2.8, "You", "We ship Friday. Everyone ready?"),
+        Say(6.6, 2.2, "Engineer", "Backend's green."),
+        Say(9.0, 2.2, "Designer", "UI's done."),
+        Say(11.4, 2.4, "Marketer", "Launch post is locked and loaded."),
+        Say(14.4, 2.4, "You", "Then let's go."),
+    ]
+    return Scene(actors, shots, script=script, time_of_day="Afternoon", name="06_meeting"), team
 
 
-def _cut_mvp():
-    """mvp · END — the MVP ships; a tight huddle, crane down into the room."""
-    pts = _ring(3, 1.5, start_deg=60.0)
-    ceo = _person("You (CEO)", 0.0, 0.0, seed=1, model="Casual_Male.gltf", role="CEO")
+def _cut_pricing():
+    """pricing · END — you and the analyst decide what you're worth."""
+    ceo = _ceo(-1.6, 0.8, face=(0.4, 0.8))
+    an = _person("Analyst", 0.8, 0.8, seed=7, model="OldClassy_Male.gltf", role="Analyst")
+    _face(an, (-1.6, 0.8))
+    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 12, "Idle"), Play(8.6, 3, "Victory")])
+    an_a = Actor("an", an, beats=[Hold(0, 12, "Idle")])
+    shots = [
+        Shot.dolly(0.0, 3.0, frm=(0.8, 1.7, 3.6), to=(0.8, 1.6, 2.2), look="an", fov=(40, 31)),
+        Shot.orbit(3.0, 3.4, center=(-0.4, 0.0, 0.8), radius=3.4, height=1.7, deg=(20, 150), fov=37.0),
+        Shot.dolly(6.4, 3.0, frm=(-1.6, 1.7, 3.2), to=(-1.6, 1.6, 2.0), look="ceo",
+                   fov=(40, 30), roll=(0, -3)),
+        Shot.static(9.4, 2.6, pos=(2.0, 1.7, 2.4), look="ceo", fov=34.0),
+    ]
+    script = [
+        Narrate(0.4, 2.8, "Decide what you're worth — and say it out loud."),
+        Say(3.2, 3.0, "Analyst", "Charge too little and they won't trust it."),
+        Say(6.6, 2.6, "You", "Then we charge what it's worth."),
+        Narrate(9.4, 2.4, "Pricing is a statement of confidence."),
+    ]
+    return Scene([ceo_a, an_a], shots, script=script, time_of_day="Noon",
+                 name="07_pricing"), [ceo, an]
+
+
+def _cut_campaign():
+    """campaign · END — the marketer pitches the go-big plan."""
+    ceo = _ceo(-1.8, 1.0, face=(0.6, 0.4))
+    mk = _person("Marketer", 0.8, 0.4, seed=9, model="Casual2_Female.gltf", role="Marketer")
+    _face(mk, (-1.8, 1.0))
+    ceo_a = Actor("ceo", ceo, beats=[Hold(0, 12, "Idle"), Play(8.4, 3, "Victory")])
+    mk_a = Actor("mk", mk, beats=[Hold(0, 6.4, "Idle"), Play(6.4, 2.4, "Victory"), Hold(8.8, 3, "Idle")])
+    shots = [
+        Shot.static(0.0, 2.8, pos=(0.2, 1.7, 4.4), look=(-0.6, 1.2, 0.7), fov=40.0),
+        Shot.dolly(2.8, 3.4, frm=(0.8, 1.7, 3.4), to=(0.8, 1.6, 2.1), look="mk", fov=(40, 31)),
+        Shot.orbit(6.2, 3.0, center=(-0.5, 0.0, 0.7), radius=3.4, height=1.7, deg=(150, 30), fov=36.0),
+        Shot.dolly(9.2, 2.8, frm=(-1.8, 1.7, 3.2), to=(-1.8, 1.6, 2.0), look="ceo", fov=(40, 30)),
+    ]
+    script = [
+        Narrate(0.4, 2.6, "You've built the fire. Now pour on the fuel."),
+        Say(3.0, 3.0, "Marketer", "Thirty days. Every channel. All in."),
+        Say(6.4, 2.4, "You", "Do it."),
+        Narrate(9.4, 2.4, "Momentum is a choice you make on purpose."),
+    ]
+    return Scene([ceo_a, mk_a], shots, script=script, time_of_day="Dusk",
+                 name="08_campaign"), [ceo, mk]
+
+
+def _cut_users1k():
+    """users1k · END — the 1,000-user milestone; the team feels it."""
+    ceo = _ceo(0.0, 0.0, face=(0.0, 4.0))
     team = [ceo]
-    actors = [Actor("ceo", ceo, beats=[Hold(0, 11, "Idle"), Play(6.0, 4, "Victory")])]
-    for i, (x, z) in enumerate(pts):
-        ch = _person(f"Team{i}", x, z, seed=20 + i)
-        _face_center(ch)
+    actors = [Actor("ceo", ceo, beats=[Hold(0, 12, "Idle"), Play(6.5, 5, "Victory")])]
+    for i, (x, z) in enumerate(_ring(4, 2.0, start_deg=20.0)):
+        ch = _person(f"Team{i}", x, z, seed=21 + i)
+        _face(ch)
         team.append(ch)
-        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 6, "Idle"), Play(6.0, 4, "Victory")]))
+        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 6.4, "Idle"), Play(6.4, 5, "Victory")]))
     shots = [
-        Shot.static(0.0, 2.6, pos=(5.6, 2.2, 5.6), look=(0, 1, 0), fov=40.0,
-                    caption=("", "Ship the MVP")),
-        Shot.crane(2.6, 3.2, x=0.0, z=4.4, y=(5.0, 1.8), look=(0, 1, 0), fov=38.0),
-        Shot.orbit(5.8, 3.0, center=(0, 0, 0), radius=4.0, height=1.7, deg=(200.0, 320.0),
-                   fov=37.0, caption=("", "v0.1 — shipped.")),
-        Shot.dolly(8.8, 2.4, frm=(0.0, 1.7, 4.0), to=(0.0, 1.6, 2.4), look="ceo", fov=(38, 30)),
+        Shot.crane(0.0, 3.4, x=0.0, z=5.2, y=(4.6, 1.9), look=(0, 1, 0), fov=42.0),
+        Shot.orbit(3.4, 3.6, center=(0, 0, 0), radius=4.4, height=1.9, deg=(0, 150), fov=40.0),
+        Shot.dolly(7.0, 3.0, frm=(0.0, 1.8, 4.4), to=(0.0, 1.6, 2.6), look="ceo", fov=(42, 31)),
+        Shot.static(10.0, 2.4, pos=(3.8, 1.9, 3.8), look=(0, 1.2, 0), fov=37.0),
     ]
-    return Scene(actors, shots, time_of_day="Evening", name="08_mvp"), team
-
-
-def _cut_team10():
-    """team10 · END — the company is a crowd now; a sweeping reveal of all ten."""
-    ceo = _person("You (CEO)", 0.0, 0.0, seed=1, model="Casual_Male.gltf", role="CEO")
-    team = [ceo]
-    actors = [Actor("ceo", ceo, beats=[Hold(0, 13, "Idle"), Play(8.0, 4, "Victory")])]
-    for i, (x, z) in enumerate(_ring(9, 3.0, start_deg=10.0)):
-        ch = _person(f"Team{i}", x, z, seed=30 + i)
-        _face_center(ch)
-        team.append(ch)
-        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 8, "Idle"), Play(8.0, 4, "Victory")]))
-    shots = [
-        Shot.crane(0.0, 4.0, x=0.0, z=6.4, y=(6.5, 2.4), look=(0, 1, 0), fov=46.0,
-                   caption=("", "Grow the team to 10")),
-        Shot.orbit(4.0, 4.4, center=(0, 0, 0), radius=6.0, height=2.4, deg=(0.0, 200.0),
-                   fov=44.0, caption=("", "A company, not a project.")),
-        Shot.dolly(8.4, 3.0, frm=(0.0, 2.0, 5.2), to=(0.0, 1.6, 2.8), look="ceo", fov=(44, 32)),
+    script = [
+        Narrate(0.4, 3.2, "A thousand people you've never met chose you today."),
+        Say(4.0, 2.6, "You", "One thousand. And we're just getting started."),
+        Narrate(7.2, 2.8, "Traction you can finally feel."),
+        Say(10.2, 2.2, "You", "Keep going."),
     ]
-    return Scene(actors, shots, time_of_day="Noon", name="09_team10"), team
+    return Scene(actors, shots, script=script, time_of_day="Morning", name="09_users1k"), team
 
 
-def _cut_series_a():
-    """series_a · END — the win. Full team around the founder, the big finish."""
-    ceo = _person("You (CEO)", 0.0, 0.0, seed=1, model="Casual_Male.gltf", role="CEO")
+def _cut_profitable():
+    """profitable · END — the climb pays off; more in than out, at last."""
+    ceo = _ceo(0.0, 0.0, face=(0.0, 4.0))
     team = [ceo]
-    actors = [Actor("ceo", ceo, beats=[Hold(0, 14, "Idle"), Play(4.0, 8, "Victory")])]
+    actors = [Actor("ceo", ceo, beats=[Hold(0, 15, "Idle"), Play(5.0, 9, "Victory")])]
     for i, (x, z) in enumerate(_ring(6, 2.6, start_deg=30.0)):
-        ch = _person(f"Team{i}", x, z, seed=40 + i)
-        _face_center(ch)
+        ch = _person(f"Team{i}", x, z, seed=41 + i)
+        _face(ch)
         team.append(ch)
-        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 4.2, "Idle"), Play(4.2, 8, "Victory")]))
+        actors.append(Actor(f"t{i}", ch, beats=[Hold(0, 5.2, "Idle"), Play(5.2, 9, "Victory")]))
     shots = [
-        Shot.dolly(0.0, 3.4, frm=(0.0, 1.7, 4.6), to=(0.0, 1.6, 2.6), look="ceo",
-                   fov=(40, 30), caption=("", "Raise a Series A")),
-        Shot.orbit(3.4, 4.6, center=(0, 0, 0), radius=5.2, height=2.2, deg=(0.0, 230.0),
-                   fov=42.0, roll=(0.0, 3.0), caption=("", "The big leagues.")),
-        Shot.crane(8.0, 3.2, x=0.0, z=5.0, y=(2.0, 6.2), look=(0, 1, 0), fov=44.0,
-                   caption=("", "SERIES A")),
-        Shot.static(11.2, 2.8, pos=(4.4, 2.0, 4.4), look=(0, 1.2, 0), fov=38.0,
-                    caption=("", "You win.")),
+        Shot.dolly(0.0, 3.4, frm=(0.0, 1.7, 4.6), to=(0.0, 1.6, 2.6), look="ceo", fov=(40, 30)),
+        Shot.orbit(3.4, 4.4, center=(0, 0, 0), radius=5.2, height=2.2, deg=(0, 220),
+                   fov=42.0, roll=(0, 3)),
+        Shot.crane(7.8, 3.4, x=0.0, z=5.0, y=(2.0, 6.0), look=(0, 1, 0), fov=44.0),
+        Shot.static(11.2, 2.8, pos=(4.4, 2.0, 4.4), look=(0, 1.2, 0), fov=37.0),
     ]
-    return Scene(actors, shots, time_of_day="Dusk", name="10_series_a"), team
+    script = [
+        Narrate(0.4, 3.2, "More coming in than going out. For the first time — ever."),
+        Say(4.0, 2.4, "You", "We're profitable."),
+        Narrate(7.0, 3.0, "Not a project anymore. Not a bet. A company."),
+        Narrate(11.2, 2.6, "You built this."),
+    ]
+    return Scene(actors, shots, script=script, time_of_day="Dusk", name="10_profitable"), team
 
 
 # --------------------------------------------------------------------------- #
@@ -274,21 +323,21 @@ class CutsceneDef:
 
 
 CUTSCENES: dict[str, CutsceneDef] = {
-    "name":      CutsceneDef("name",      "begin",  "Name your company",          _cut_name),
-    "cofounder": CutsceneDef("cofounder", "middle", "Win over co-founder Robin",  _cut_cofounder),
-    "seed":      CutsceneDef("seed",      "end",    "Raise your seed money",      _cut_seed),
-    "office":    CutsceneDef("office",    "begin",  "Lease your first office",    _cut_office),
-    "intern":    CutsceneDef("intern",    "middle", "Take on your first intern",  _cut_intern),
-    "engineer":  CutsceneDef("engineer",  "end",    "Hire your first engineer",   _cut_engineer),
-    "website":   CutsceneDef("website",   "end",    "Launch your website",        _cut_website),
-    "mvp":       CutsceneDef("mvp",       "end",    "Ship the MVP",               _cut_mvp),
-    "team10":    CutsceneDef("team10",    "end",    "Grow the team to 10",        _cut_team10),
-    "series_a":  CutsceneDef("series_a",  "end",    "Raise a Series A",           _cut_series_a),
+    "pitch":       CutsceneDef("pitch",       "begin",  "Write your one-line pitch",  _cut_pitch),
+    "customer":    CutsceneDef("customer",    "middle", "Name your target customer",  _cut_customer),
+    "competitors": CutsceneDef("competitors", "end",    "Size up the competition",    _cut_competitors),
+    "logo":        CutsceneDef("logo",        "middle", "Design a logo",              _cut_logo),
+    "research":    CutsceneDef("research",     "middle", "Run market research",        _cut_research),
+    "meeting":     CutsceneDef("meeting",     "end",    "Hold an all-hands",          _cut_meeting),
+    "pricing":     CutsceneDef("pricing",     "end",    "Set your pricing",           _cut_pricing),
+    "campaign":    CutsceneDef("campaign",    "end",    "Run a marketing campaign",   _cut_campaign),
+    "users1k":     CutsceneDef("users1k",     "end",    "Reach 1,000 users",          _cut_users1k),
+    "profitable":  CutsceneDef("profitable",  "end",    "Turn profitable",            _cut_profitable),
 }
 
 # render order (chapter order through the quest line)
-ORDER = ["name", "cofounder", "seed", "office", "intern",
-         "engineer", "website", "mvp", "team10", "series_a"]
+ORDER = ["pitch", "customer", "competitors", "logo", "research",
+         "meeting", "pricing", "campaign", "users1k", "profitable"]
 
 
 def build(key: str) -> tuple[Scene, list]:

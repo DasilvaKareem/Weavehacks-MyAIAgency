@@ -278,6 +278,33 @@ class Caption:
 
 
 @dataclass
+class Line:
+    """One line of the script track. `kind` decides how it's drawn:
+      - "say"     → character dialogue: a named speaker, lower-third subtitle.
+      - "narrate" → voiceover: no speaker, centered near the top, dimmer.
+    Narration and dialogue can overlap (a narrator under a character line)."""
+    t: float
+    dur: float
+    text: str
+    speaker: str = ""
+    kind: str = "say"
+
+    @property
+    def end(self) -> float:
+        return self.t + self.dur
+
+
+def Say(t, dur, speaker, text) -> Line:
+    """A line of character dialogue (shown as a lower-third subtitle)."""
+    return Line(t, dur, text, speaker=speaker, kind="say")
+
+
+def Narrate(t, dur, text) -> Line:
+    """A line of narrator voiceover (shown centered near the top)."""
+    return Line(t, dur, text, kind="narrate")
+
+
+@dataclass
 class Scene:
     """A complete cutscene: who's in it, the camera shot list, captions, and the
     output settings. World rendering is supplied as a callback by the runner, so
@@ -285,6 +312,7 @@ class Scene:
     actors: list                       # list[Actor]
     shots: list                        # list[Shot]
     captions: list = field(default_factory=list)
+    script: list = field(default_factory=list)   # list[Line]: narration + dialogue
     time_of_day: str = "Afternoon"
     resolution: tuple = (1920, 1080)
     fps: int = 60
@@ -294,7 +322,7 @@ class Scene:
 
     def total(self) -> float:
         ends = [s.end for s in self.shots] + [c.end for c in self.captions]
-        ends += [a.end_time() for a in self.actors]
+        ends += [a.end_time() for a in self.actors] + [ln.end for ln in self.script]
         return max(ends, default=0.0)
 
 
@@ -309,7 +337,8 @@ class Director:
         self._shots = sorted(scene.shots, key=lambda s: s.t)
         self.camera = pr.Camera3D(pr.Vector3(0, 2, 6), pr.Vector3(0, 1, 0),
                                   pr.Vector3(0, 1, 0), 45.0, pr.CAMERA_PERSPECTIVE)
-        self.caption = None            # (speaker, line) or None, set per frame
+        self.caption = None            # (speaker, line) active dialogue, or None
+        self.narration = None          # active narrator line (str), or None
 
     @property
     def done(self) -> bool:
@@ -345,13 +374,21 @@ class Director:
             self.camera.up = pr.Vector3(*_roll_up(pos, look, roll))
             self.camera.fovy = float(fov)
 
-        # Captions: shot-attached first, then the standalone caption track.
+        # Dialogue + narration: a shot-attached caption first (back-compat), then
+        # the standalone caption track, then the richer script track (Say/Narrate).
         self.caption = None
+        self.narration = None
         if shot is not None and shot.caption is not None and shot.t <= self.t < shot.end:
             self.caption = shot.caption
         for c in self.scene.captions:
             if c.t <= self.t < c.end:
                 self.caption = (c.speaker, c.line)
+        for ln in self.scene.script:
+            if ln.t <= self.t < ln.end:
+                if ln.kind == "narrate":
+                    self.narration = ln.text
+                else:
+                    self.caption = (ln.speaker, ln.text)
 
         self.t += dt
 
@@ -373,6 +410,7 @@ def _roll_up(pos, look, roll_deg: float):
 _CAP_BG = pr.Color(0, 0, 0, 0)
 _CAP_FG = pr.Color(236, 236, 240, 255)
 _CAP_SPEAKER = pr.Color(120, 200, 255, 255)
+_NARR_FG = pr.Color(214, 206, 188, 235)        # warm, dimmer voiceover
 
 
 class Recorder:
@@ -398,7 +436,8 @@ class Recorder:
         pr.clear_background(self.sky)
         draw_world(director.camera)                # opens + closes 3D mode itself
         self._letterbox()
-        self._caption(director.caption)
+        self._narration(director.narration)
+        self._dialogue(director.caption)
         pr.end_texture_mode()
 
     def save_frame(self) -> str:
@@ -431,20 +470,52 @@ class Recorder:
         pr.draw_rectangle(0, 0, self.w, bar, black)
         pr.draw_rectangle(0, self.h - bar, self.w, bar, black)
 
-    def _caption(self, caption) -> None:
+    def _wrap(self, text: str, fs: int, max_w: int) -> list[str]:
+        """Greedy word-wrap to fit `max_w` pixels at font size `fs`."""
+        lines, cur = [], ""
+        for w in text.split(" "):
+            trial = (cur + " " + w).strip()
+            if cur and pr.measure_text(trial, fs) > max_w:
+                lines.append(cur)
+                cur = w
+            else:
+                cur = trial
+        if cur:
+            lines.append(cur)
+        return lines
+
+    def _draw_centered(self, text: str, y: int, fs: int, color) -> None:
+        tw = pr.measure_text(text, fs)
+        x = (self.w - tw) // 2
+        pr.draw_text(text, x + 2, y + 2, fs, pr.Color(0, 0, 0, 180))   # shadow
+        pr.draw_text(text, x, y, fs, color)
+
+    def _narration(self, text) -> None:
+        """Narrator voiceover: centered just under the top letterbox bar."""
+        if not text:
+            return
+        fs = max(18, self.h // 34)
+        bar = int(self.h * self.scene.letterbox)
+        y = (bar + 14) if bar else 28
+        for ln in self._wrap(text, fs, int(self.w * 0.7)):
+            self._draw_centered(ln, y, fs, _NARR_FG)
+            y += fs + 8
+
+    def _dialogue(self, caption) -> None:
+        """Character dialogue: speaker name + wrapped line in the lower third."""
         if not caption:
             return
         speaker, line = caption
         fs = max(20, self.h // 30)
         bar = int(self.h * self.scene.letterbox)
-        y = self.h - bar - fs - 18 if bar else self.h - fs - 28
+        wrapped = self._wrap(line, fs, int(self.w * 0.72))
+        block_h = len(wrapped) * (fs + 6)
+        y = (self.h - bar - 18 - block_h) if bar else (self.h - 28 - block_h)
         if speaker:
-            sw = pr.measure_text(speaker, fs)
-            pr.draw_text(speaker, (self.w - sw) // 2, y - fs - 6, fs, _CAP_SPEAKER)
-        lw = pr.measure_text(line, fs)
-        # soft shadow for legibility over any background
-        pr.draw_text(line, (self.w - lw) // 2 + 2, y + 2, fs, pr.Color(0, 0, 0, 180))
-        pr.draw_text(line, (self.w - lw) // 2, y, fs, _CAP_FG)
+            self._draw_centered(speaker, y - fs - 6, fs, _CAP_SPEAKER)
+        for ln in wrapped:
+            self._draw_centered(ln, y, fs, _CAP_FG)
+            y += fs + 6
 
 
 # --------------------------------------------------------------------------- #
