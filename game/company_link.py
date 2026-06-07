@@ -42,6 +42,9 @@ CASH_KEY = "cash"
 LEASES_KEY = "leased_lots"
 # The in-game calendar's running day count, so the date survives a restart.
 CALENDAR_KEY = "calendar_day"
+# The GLB basename of the car the player owns (bought at the Auto Mall), or empty
+# if they don't own one — so your ride survives a restart.
+OWNED_CAR_KEY = "owned_car"
 
 
 class CompanyLink:
@@ -193,6 +196,15 @@ class CompanyLink:
         """Persist the in-game day count so the date survives a restart."""
         self.store.set_setting(CALENDAR_KEY, str(int(day)))
 
+    def load_owned_car(self) -> str | None:
+        """The model basename of the car the player owns, or None if they don't."""
+        raw = self.store.get_setting(OWNED_CAR_KEY)
+        return raw or None
+
+    def save_owned_car(self, model: str | None) -> None:
+        """Persist the owned car (empty string clears it, e.g. after selling)."""
+        self.store.set_setting(OWNED_CAR_KEY, model or "")
+
     def load_flag(self, key: str) -> bool:
         """Read a one-off boolean flag (e.g. 'a one-time gift was claimed')."""
         return self.store.get_setting("flag_" + key) == "1"
@@ -213,6 +225,7 @@ class CompanyLink:
         self.store.set_setting(CASH_KEY, "")
         self.store.set_setting(LEASES_KEY, "")
         self.store.set_setting(CALENDAR_KEY, "")
+        self.store.set_setting(OWNED_CAR_KEY, "")
         self.store.set_setting(TERMINAL_HISTORY_KEY, "")    # wipe the AI terminal transcript too
 
     def load_unlocks(self) -> set[str]:
