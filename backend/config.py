@@ -405,6 +405,23 @@ ROLE_PROFILES = {
         "vercel": True,
         "blurb": _BLOG_BLURB,
     },
+    # The Film Director: directs cinematic videos of the company. The direct_film
+    # tool authors a cast + timed script to the drive (/films/*.json); the game's
+    # cinematic recorder renders it with the real CEO + hires and per-agent voices.
+    # "film director" is a substring of "Film Director" and of no other role.
+    "film director": {
+        "servers": [],
+        "film": True,
+        "blurb": (
+            "You are the company's Film Director. You make short cinematic videos "
+            "(teasers, recaps, launch films) starring the real CEO and hired "
+            "teammates. When asked for a video, use the direct_film tool: give it a "
+            "title and a clear brief, and it writes the cast + a timed script to the "
+            "company drive. Keep films tight (15-25s). Tell the CEO the film was "
+            "written and how to render it; don't claim a video file exists until "
+            "it's actually been rendered."
+        ),
+    },
     # The only role whose tools act on the company itself. "human resource" matches
     # "Human Resources Manager"; the separate "hr" key catches the "HR" abbreviation
     # ("hr" is NOT a substring of "human resources"). Both map to the same HR tools.
@@ -505,6 +522,12 @@ def role_uses_blogger(role: str) -> bool:
     """True if this role gets the host→sandbox image bridge (Blogger)."""
     prof = _match_profile(role)
     return bool(prof and prof.get("blogger"))
+
+
+def role_uses_film(role: str) -> bool:
+    """True if this role can author cinematic films (Film Director)."""
+    prof = _match_profile(role)
+    return bool(prof and prof.get("film"))
 
 
 def role_uses_vercel(role: str) -> bool:
