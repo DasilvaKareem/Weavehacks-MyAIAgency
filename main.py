@@ -23,7 +23,7 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle, dealership
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice, vehicle, dealership, fonts
 from game import park as parkmod
 from game.park import Park, load_lots as load_park, block_pos
 from game.shop import ShopPanel, load_catalog
@@ -3362,8 +3362,13 @@ class Game:
             pass
 
     def run(self) -> None:
-        pr.set_config_flags(pr.FLAG_MSAA_4X_HINT)
+        # HIGHDPI: on a Retina panel the backing framebuffer must match physical
+        # pixels (2x), or macOS renders the window at half-res and upscales it —
+        # which made everything, especially text, look blurry/low-res. Logical
+        # draw coords stay 1280x720, so the UI layout is unchanged.
+        pr.set_config_flags(pr.FLAG_MSAA_4X_HINT | pr.FLAG_WINDOW_HIGHDPI)
         pr.init_window(config.WINDOW_WIDTH, config.WINDOW_HEIGHT, config.WINDOW_TITLE)
+        fonts.init()   # crisp VT323 CRT font for the whole UI (wraps pr.draw_text)
         pr.set_target_fps(config.TARGET_FPS)
         pr.set_exit_key(pr.KEY_NULL)   # Esc must NOT quit the game; it only closes the chat
         # Tighten the depth range. raylib's default near=0.01 wrecks depth precision
