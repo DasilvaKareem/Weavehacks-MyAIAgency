@@ -16,6 +16,9 @@ company.db-shm
 # Node
 node_modules/
 
+# Cinematic recorder output (PNG frame dumps + encoded .mp4 cutscenes)
+recordings/
+
 # OS
 .DS_Store
 company_role_policy.json
