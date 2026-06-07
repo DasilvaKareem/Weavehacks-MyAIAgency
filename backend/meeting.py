@@ -127,7 +127,11 @@ class MeetingOrchestrator:
                     mode: str = "moderated", on_event=None) -> MeetingResult:
         """Drive the turns then the CEO close. Posts every turn to RTDB as it goes."""
         ids = list(members)
-        roster = "\n".join(f"{aid} — {r.name} ({r.role})" for aid, r in members.items())
+        # The moderator routes on this; annotate each attendee with the prior work
+        # they bring so it can favour voices who can ground the call in real
+        # artifacts. Only built for moderated mode (round-robin ignores it).
+        roster = (self._roster_for_moderator(members, topic)
+                  if mode != "round_robin" else "")
         transcript: list[tuple[str, str]] = [("CEO", f"Team meeting: {topic}")]
 
         def emit(who: str, content: str):
@@ -164,17 +168,64 @@ class MeetingOrchestrator:
 
     # --- strategy: who speaks next ----------------------------------------
 
+    def _roster_for_moderator(self, members, topic) -> str:
+        """One annotated line per attendee — `id — name (role) · what they bring`
+        — so the facilitator can route toward voices with relevant prior work.
+        The drive/meeting scans run ONCE here (not per attendee), and the whole
+        thing degrades to the plain roster if any lookup fails."""
+        try:
+            files = self.store.fs_list()
+        except Exception:
+            files = []
+        try:
+            meetings = self.store.list_meetings()
+        except Exception:
+            meetings = []
+        # Which attendees authored files matching the topic's salient keywords —
+        # the strongest "has relevant prior work" signal. Gathered across all
+        # attendees in one pass keyed by author.
+        on_topic: dict[str, set] = {}
+        try:
+            kws = [w.strip(".,?!:;'\"").lower() for w in topic.split() if len(w) > 3][:4]
+            seen = set()
+            for kw in kws:
+                for f in self.store.fs_search(kw, limit=20):
+                    if f.path in seen:
+                        continue
+                    seen.add(f.path)
+                    on_topic.setdefault(f.author_id, set()).add(f.path)
+        except Exception:
+            pass
+
+        lines = []
+        for aid, r in members.items():
+            bits = []
+            rel = sorted(on_topic.get(aid, ()))[:2]
+            if rel:
+                bits.append("on-topic work: " + ", ".join(rel))
+            nf = sum(1 for f in files if f.author_id == aid)
+            if nf:
+                bits.append(f"{nf} drive file(s)")
+            nm = sum(1 for m in meetings
+                     if m.summary and aid in (m.members or "").split(","))
+            if nm:
+                bits.append(f"{nm} prior meeting(s)")
+            tail = f" · {'; '.join(bits)}" if bits else ""
+            lines.append(f"{aid} — {r.name} ({r.role}){tail}")
+        return "\n".join(lines)
+
     def _next_speaker(self, mode, ids, transcript, roster, topic, turn, last):
         if mode == "round_robin":
             return ids[turn % len(ids)]
         # moderated: ask a facilitator, fall back to round-robin on any hiccup
         prompt = (
             f"You are the facilitator of a team meeting.\nTopic: {topic}\n"
-            f"Attendees (id — name (role)):\n{roster}\n\n"
+            f"Attendees (id — name (role) · prior work they bring):\n{roster}\n\n"
             f"Transcript so far:\n{_format_transcript(transcript)}\n\n"
             "Decide who should speak next to move toward a decision, or end the "
             "meeting if a clear recommendation has emerged or it's going in circles. "
-            "Prefer voices that add a new angle over ones who just spoke. "
+            "Prefer a voice that adds a new angle — or one whose notes show relevant "
+            "prior work (on-topic files, past meetings) — over someone who just spoke. "
             'Return ONLY JSON: {"next": "<attendee id>" or "DONE", "reason": "..."}'
         )
         company_ctx = company.context_for(self.store)   # steer toward company-relevant voices

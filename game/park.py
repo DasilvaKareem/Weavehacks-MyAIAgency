@@ -149,11 +149,16 @@ class NpcBuilding:
     store: str | None = None   # storefront kind ("outfit" = the wardrobe shop)
     market: str | None = None  # idle-market venue ("bank" / "broker") opened inside
     service: str | None = None # civic service opened inside ("grant" = the grants office)
+    game: str | None = None    # arcade game opened inside ("slots" = the casino's slot machine)
     plan: str | None = None    # interior floor-plan id (else the default quest plan)
 
     @property
     def is_quest_stop(self) -> bool:
         return self.task is not None or bool(self.tasks)
+
+    @property
+    def is_game(self) -> bool:
+        return self.game is not None
 
     @property
     def is_store(self) -> bool:
@@ -169,8 +174,9 @@ class NpcBuilding:
 
     @property
     def interactive(self) -> bool:
-        """Walk-up + E does something here (a quest, storefront, market, or service)."""
-        return self.is_quest_stop or self.is_store or self.is_market or self.is_service
+        """Walk-up + E does something here (a quest, storefront, market, service, or game)."""
+        return (self.is_quest_stop or self.is_store or self.is_market
+                or self.is_service or self.is_game)
 
     def task_keys(self) -> tuple:
         """Every to-do this stop can complete (one for a shop, many for a workshop)."""
@@ -394,6 +400,8 @@ STREET_XZ = 10.0               # → road ≈ 0.67*10 ≈ 6.7 wide; footprint (2
 STREET_Y = 0.5                 # flatten the 0.25-thick slab
 STREET_Y_OFF = -0.1            # sit just under y=0 so the surface is ~flat
 STREET_PARITY = 0.03           # height stagger between adjacent (overlapping) tiles
+GROUND_Y = -0.08               # base concrete plane, sunk below the road tiles to kill z-fight
+BUILDING_SINK = 0.12           # bury building bases below the road so footprints don't z-fight
 TILE_CULL = 62.0               # wider grid + bigger tiles; match the building cull
 CITY_PROP_SCALE = 6.0          # street-pack props (keep poles a sane height)
 
@@ -440,7 +448,8 @@ class Park:
                         task=n.get("task"), reward=int(n.get("reward", 0)),
                         blurb=n.get("blurb", ""), tasks=tuple(n.get("tasks", ())),
                         store=n.get("store"), market=n.get("market"),
-                        service=n.get("service"), plan=n.get("plan"))
+                        service=n.get("service"), game=n.get("game"),
+                        plan=n.get("plan"))
             for n in (npc if npc is not None else load_npc())
         ]
         for lot in lots:
@@ -781,7 +790,10 @@ class Park:
 
     def _draw_streets(self, cx: float = 0.0, cz: float = 0.0) -> None:
         span = (AVENUES + 1) * BLOCK
-        pr.draw_plane(pr.Vector3(0, 0, 0), pr.Vector2(span, span), GROUND)
+        # Base concrete sits a hair BELOW the road tiles (~y=0) so the two coplanar
+        # surfaces don't z-fight (the flickering "floor"). Characters stand on the
+        # tiles/lawns, not this plane, so the small drop is invisible in play.
+        pr.draw_plane(pr.Vector3(0, GROUND_Y, 0), pr.Vector2(span, span), GROUND)
         # Modular road tiles: a 4-way at every intersection on the block grid,
         # scaled so one tile fills a block (its corners meet at the building
         # addresses). Falls back to flat asphalt strips if the tile isn't there.
@@ -820,7 +832,11 @@ class Park:
                     mul: float = 1.0, vboost: float = HEIGHT_BOOST) -> None:
         """Draw a building model scaled to fit and stretched taller by `vboost`."""
         sx = ld.scale * mul
-        pr.draw_model_ex(ld.model, pr.Vector3(x, ld.y_off * mul * vboost, z),
+        # Sink the base just below the road surface (~y=0) so the building's flat
+        # bottom isn't coplanar with the tiles — that coincidence z-fights and
+        # flickers at the ground line. The buried lip is hidden by the road/ground.
+        y = ld.y_off * mul * vboost - BUILDING_SINK
+        pr.draw_model_ex(ld.model, pr.Vector3(x, y, z),
                          pr.Vector3(0, 1, 0), yaw, pr.Vector3(sx, sx * vboost, sx), tint)
 
     def _draw_city(self, cx: float, cz: float) -> None:

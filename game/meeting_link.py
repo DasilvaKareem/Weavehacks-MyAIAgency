@@ -22,10 +22,23 @@ class MeetingLink:
         self.topic = ""
         self.members = {}      # agent_id -> AgentRow
         self._seen = 0         # SQLite fallback cursor
+        self.voice_mode = "local"  # off | local | daily
+        self.room_url = ""     # set when a Daily boardroom call goes live
+
+    @staticmethod
+    def daily_available() -> str | None:
+        """None if a Daily boardroom call can start, else why it can't (dep/key)."""
+        try:
+            from backend.daily_meeting import _missing
+            return _missing()
+        except Exception as exc:
+            return str(exc)
 
     def start(self, topic: str, agent_ids: list[str], *, max_turns: int = 6,
-              mode: str = "moderated") -> str:
+              mode: str = "moderated", voice_mode: str = "local") -> str:
         self.topic = topic
+        self.voice_mode = voice_mode
+        self.room_url = ""
         self._orch = MeetingOrchestrator(store=self.store)
         self.cid, self.members = self._orch.open_meeting(topic, agent_ids)
         if self._orch.meetings is not None:
@@ -42,10 +55,35 @@ class MeetingLink:
 
     def _run(self, topic, max_turns, mode) -> None:
         try:
-            self._orch.run_meeting(self.cid, topic, self.members,
-                                   max_turns=max_turns, mode=mode)
+            if self.voice_mode == "daily":
+                self._run_daily(topic, max_turns, mode)
+            else:
+                # off / local: the brain posts turns to RTDB/SQLite; the panel
+                # polls + (in local mode) voices them via its own VoicePlayer.
+                self._orch.run_meeting(self.cid, topic, self.members,
+                                       max_turns=max_turns, mode=mode)
         except Exception:
             pass  # surfaced to the UI via running() going False
+
+    def _run_daily(self, topic, max_turns, mode) -> None:
+        """Voice this same meeting into a live Daily room and open a browser to
+        listen. Reuses our already-opened (orch, cid, members) so it's one meeting
+        — the panel keeps showing the transcript by polling RTDB/SQLite as usual."""
+        import asyncio
+        import webbrowser
+        from backend.daily_meeting import run_daily_meeting
+
+        def _on_room(url: str) -> None:
+            self.room_url = url
+            try:
+                webbrowser.open(url)   # auto-open this Mac's browser to listen
+            except Exception:
+                pass
+
+        asyncio.run(run_daily_meeting(
+            topic, max_turns=max_turns, mode=mode,
+            orch=self._orch, cid=self.cid, members=self.members,
+            on_room=_on_room))
 
     def name_of(self, sender: str) -> str:
         if sender == "ceo":

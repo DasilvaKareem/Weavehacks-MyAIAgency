@@ -395,6 +395,23 @@ ROLE_PROFILES = {
         "hr": True,
         "blurb": _HR_BLURB,
     },
+    # The front-desk receptionist. No external tools — its value is knowing the
+    # company and who does what: it greets the CEO and visitors and uses the
+    # shared drive (drive_search/read) + its inbox to point people to the right
+    # file or teammate. "reception" is a substring of "Receptionist" and of no
+    # other role title, so it matches safely.
+    "reception": {
+        "servers": [],
+        "blurb": (
+            "You are the office receptionist — the warm, organized face of the "
+            "front desk. You greet the CEO and visitors, make a little small talk, "
+            "and help people find their way. You know the company and who works "
+            "here: when someone asks where something is or who's handling what, "
+            "search the shared company drive (drive_search / drive_read) and check "
+            "your inbox, then point them to the exact file or teammate. Keep it "
+            "friendly and brief — a sentence or two, like a real front-desk hello."
+        ),
+    },
 }
 
 

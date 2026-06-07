@@ -33,6 +33,12 @@ UNLOCKS_KEY = "unlocked_outfits"
 # competitors). Canonical home of the CEO's decisions; the backend reads it from here
 # (see backend/company.py) to brief every agent. JSON dict.
 COMPANY_KEY = "company_profile"
+# The player's cash on hand, persisted so the bank balance survives a restart.
+CASH_KEY = "cash"
+# Ids of the office lots the player has leased, so your offices survive a restart.
+LEASES_KEY = "leased_lots"
+# The in-game calendar's running day count, so the date survives a restart.
+CALENDAR_KEY = "calendar_day"
 
 
 class CompanyLink:
@@ -128,6 +134,56 @@ class CompanyLink:
         """Persist the idle-market state so it grows while you're away."""
         self.store.set_setting(MARKET_KEY, json.dumps(state))
 
+    def load_cash(self) -> int | None:
+        """The player's saved cash, or None on a fresh save (use STARTING_CASH)."""
+        raw = self.store.get_setting(CASH_KEY)
+        if raw is None or raw == "":
+            return None
+        try:
+            return int(float(raw))
+        except ValueError:
+            return None
+
+    def save_cash(self, amount: int) -> None:
+        """Persist cash on hand so the balance survives a restart."""
+        self.store.set_setting(CASH_KEY, str(int(amount)))
+
+    def load_leases(self) -> set[str]:
+        """Ids of leased office lots (empty on a fresh save)."""
+        raw = self.store.get_setting(LEASES_KEY)
+        if not raw:
+            return set()
+        try:
+            return set(json.loads(raw))
+        except ValueError:
+            return set()
+
+    def save_leases(self, ids: set[str]) -> None:
+        """Persist which office lots you've leased, so your offices survive a restart."""
+        self.store.set_setting(LEASES_KEY, json.dumps(sorted(ids)))
+
+    def load_calendar(self) -> int:
+        """The saved in-game day count (0 on a fresh save)."""
+        raw = self.store.get_setting(CALENDAR_KEY)
+        if not raw:
+            return 0
+        try:
+            return int(float(raw))
+        except ValueError:
+            return 0
+
+    def save_calendar(self, day: int) -> None:
+        """Persist the in-game day count so the date survives a restart."""
+        self.store.set_setting(CALENDAR_KEY, str(int(day)))
+
+    def load_flag(self, key: str) -> bool:
+        """Read a one-off boolean flag (e.g. 'a one-time gift was claimed')."""
+        return self.store.get_setting("flag_" + key) == "1"
+
+    def set_flag(self, key: str, value: bool = True) -> None:
+        """Persist a one-off boolean flag."""
+        self.store.set_setting("flag_" + key, "1" if value else "")
+
     def reset_company(self) -> None:
         """Wipe the save for a New World: fire every agent and clear the CEO
         profile + task progress. Unlocked outfits are kept (they're paid for)."""
@@ -137,6 +193,9 @@ class CompanyLink:
         self.store.set_setting(TASKS_KEY, "")
         self.store.set_setting(COMPANY_KEY, "")
         self.store.set_setting(MARKET_KEY, "")
+        self.store.set_setting(CASH_KEY, "")
+        self.store.set_setting(LEASES_KEY, "")
+        self.store.set_setting(CALENDAR_KEY, "")
 
     def load_unlocks(self) -> set[str]:
         """The set of purchased outfit ids (empty on a fresh save)."""

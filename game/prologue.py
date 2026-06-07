@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pyray as pr
 
-from . import config
+from . import config, roster
 from .entities import Character
 from .onboarding import OnboardingScreen
 
@@ -61,6 +61,9 @@ class Prologue:
         self.creator.first_run = True
         self._guide = Character(name=GUIDE_NAME, role="Guide", x=0.0, z=0.0,
                                 color=pr.GOLD, model=GUIDE_MODEL)
+        # Tint to a real appearance, else the model's raw "Skin" material (~black)
+        # shows and the intro guide renders solid black.
+        roster.apply_look(self._guide, {"skin_idx": 3, "hair_idx": 4, "eye_idx": 1})
         self._cam = pr.Camera3D(pr.Vector3(0.0, 1.35, 3.4), pr.Vector3(0.0, 1.0, 0.0),
                                 pr.Vector3(0.0, 1.0, 0.0), 45.0, pr.CAMERA_PERSPECTIVE)
         self._spin = 0.0

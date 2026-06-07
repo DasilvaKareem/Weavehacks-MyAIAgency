@@ -13,6 +13,69 @@
       ]
     },
 
+    "money_tips": {
+      "who": "Baker",
+      "lines": [
+        "Welcome to the Corner Bakery! Pull up a stool — on the house. You've got the hungry look of a founder who's short on cash. Let me share a few things I've learned.",
+        "First, work the neighborhood. Every civic office — the Chamber, the Registrar, the Bureau, the Sign Shop — pays you a little seed cash just for sorting out your paperwork. Free dough for to-dos you'd do anyway.",
+        "When you're ready for the real money, go see the money folks. The Angel Investor cuts your first check; once your pitch is airtight, Apex Ventures writes the big rounds. Fill out your whole business model canvas first — nobody funds a half-baked plan.",
+        "Mind your pricing, too. The First City Bank's advisor helps you charge what you're worth, and both the bank and Apex Securities have trading floors if you want to put idle cash to work.",
+        "Now the hard part: don't let the oven burn. Every office you lease charges rent each month, and every hire draws a wage. Don't staff up faster than the money comes in.",
+        "That's the recipe — earn from quests, raise from investors, price it right, and keep your costs lean. Now go make some money. Come back for a cinnamon roll when you're rich!"
+      ]
+    },
+
+    "risk_tips": {
+      "who": "Pit Boss",
+      "lines": [
+        "Well, well — a founder walks into my casino. Relax, I'm not here to take your money. Sit down and let me teach you about risk instead.",
+        "Rule one: cash is oxygen. The day you run out, the game's over — doesn't matter how good your hand was. Always know how many months of runway you've got left.",
+        "Rule two: never bet the company on one hand. A few small experiments beat one all-in gamble that can wipe you out.",
+        "Rule three: the house wins because it knows the odds. So know yours — price for margin, watch your burn, and only double down on what's already working.",
+        "Play it smart and the long game is yours. Now off you go — leave the actual gambling to me."
+      ]
+    },
+
+    "network_tips": {
+      "who": "Barber",
+      "lines": [
+        "Pull up a chair, friend. The best deals in this town get made in a barber's chair, not a boardroom. Let me let you in on a few.",
+        "Your network is your net worth. The Chamber, the Incubator, the cafe — every introduction is a door. Shake hands, remember names, follow up.",
+        "Word of mouth beats any ad money can buy. Do right by one customer and they'll send you three. Reputation compounds — guard it like gold.",
+        "And don't be a stranger. Deals come to the folks who keep showing up. Now — same as always, or shall we try something sharp?"
+      ]
+    },
+
+    "strategy_tips": {
+      "who": "Bookseller",
+      "lines": [
+        "Welcome to Page & Co. Quiet in here, isn't it? Good — founders who read tend to make fewer expensive mistakes.",
+        "Here's the whole shelf in one sentence: do one thing better than anyone, for one customer who truly needs it. Focus is a superpower.",
+        "Every problem you'll hit, someone already wrote the book on it — sales, hiring, pricing. Borrow their scars instead of earning your own.",
+        "And measure what matters. A strategy you can't track is just a wish. Now, may I recommend a title for the road?"
+      ]
+    },
+
+    "wellness_tips": {
+      "who": "Pharmacist",
+      "lines": [
+        "Welcome to the Wellness Pharmacy. You look like you haven't slept since the idea first hit you. Let's sort that out.",
+        "A company is a marathon, not a sprint. Burn yourself out in month one and there's no founder left to run it in month two.",
+        "Sleep, eat, take a walk. Your best decisions come from a rested head — not a third coffee at midnight.",
+        "And lean on your team and your co-founder; you don't have to carry it all alone. Take care of yourself first — the company needs you whole."
+      ]
+    },
+
+    "hustle_tips": {
+      "who": "Shopkeeper",
+      "lines": [
+        "Welcome to the 24/7 Mart — always open, just like a founder ought to be. Need something? Course you do, you all do.",
+        "Early on, do the things that don't scale. Hand-serve your first customers, answer every message yourself. That's how you learn what they really want.",
+        "Don't wait for perfect. Ship the scrappy version, see what sticks, fix it tomorrow. Done beats pretty.",
+        "And every dollar counts when you're small — chase the quick wins, keep the lights on, and grind. Now grab what you need and get back to it."
+      ]
+    },
+
     "cofounder": {
       "who": "Robin",
       "lines": [

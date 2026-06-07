@@ -33,6 +33,7 @@ _ROLE_BASELINES: list[tuple[str, tuple[int, int, int, int, int], list[str]]] = [
     ("sales",      (70, 60, 92, 78, 35), ["relationship-building", "infectious enthusiasm", "reading the room"]),
     ("operations", (50, 90, 55, 66, 20), ["process discipline", "calm under load", "tidy execution"]),
     ("recruiter",  (65, 66, 86, 86, 35), ["people-first warmth", "fast rapport", "spotting potential"]),
+    ("reception",  (58, 80, 90, 90, 18), ["warm welcomes", "knowing who's who", "smooth hand-offs"]),
     ("support",    (55, 78, 60, 90, 22), ["patience", "reassuring clarity", "turning frustration around"]),
     ("assistant",  (55, 88, 62, 82, 25), ["proactive scheduling", "anticipating needs", "ruthless organization"]),
     ("document",   (50, 88, 45, 72, 25), ["meticulous filing", "naming discipline", "single source of truth"]),

@@ -346,8 +346,10 @@ class Director:
 
     TICK = 0.8   # seconds between decision passes
 
-    def __init__(self, brains: list, llm_budget_per_min: int = 6) -> None:
-        self.brains = brains
+    def __init__(self, agents: list, llm_budget_per_min: int = 6) -> None:
+        # Holds the active-roster list of Characters (the single source of truth);
+        # brains are read off each Character, so there's no parallel list to sync.
+        self.agents = agents
         self._acc = 0.0
         self.llm_budget_per_min = llm_budget_per_min
         self._llm_window = 0.0
@@ -364,8 +366,9 @@ class Director:
         if self._acc < self.TICK:
             return
         self._acc = 0.0
-        for b in self.brains:
-            if b.frozen or b.commanded or b.state != WORK:
+        for a in self.agents:
+            b = a.brain
+            if b is None or b.frozen or b.commanded or b.state != WORK:
                 continue
             if b.ch.status == "working":      # busy bots stay at their desk
                 continue

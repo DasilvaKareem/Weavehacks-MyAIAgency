@@ -23,7 +23,7 @@ faulthandler.enable()
 
 import pyray as pr
 
-from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, tasks, dialogue, voice
+from game import config, gamepad, roster, furniture, navgrid, locomotion, zones, commands, floorplan, interior, daylight, season, calendar, tasks, dialogue, voice
 from game import park as parkmod
 from game.park import Park, load_lots as load_park
 from game.shop import ShopPanel, load_catalog
@@ -39,6 +39,7 @@ from game.dossier_panel import DossierPanel
 from game.investor_panel import InvestorPanel
 from game import market as market_mod
 from game.market_panel import MarketPanel
+from game.slot_panel import SlotPanel
 from game.grant_panel import GrantPanel
 from game.prologue import Prologue
 from game.menu import MainMenu
@@ -108,6 +109,7 @@ class Game:
         self.registry = ModelRegistry()
         self.daylight = daylight.DayCycle()   # day/night lighting for office + park
         self.season = season.SeasonClock()    # Summer->Autumn->Winter tree foliage
+        self.calendar = calendar.GameCalendar()  # in-game date, advanced by the day/night loop
         self.plans = floorplan.load_plans()
 
         self.mode = "office"
@@ -120,6 +122,9 @@ class Game:
         self.robin = Character(name=COFOUNDER_NAME, role="Co-founder", x=0.0, z=0.0,
                                color=pr.Color(90, 210, 230, 255), dept="Founder",
                                model="Suit_Male.gltf", yaw=180.0)
+        # Give the named NPCs a real appearance, else the model's raw "Skin"
+        # material (~black) shows. Fixed looks so they're recognizable each run.
+        roster.apply_look(self.robin, {"skin_idx": 2, "hair_idx": 2, "eye_idx": 1, "suit_idx": 2})
         # Once you've won Robin over, you can tell him (Nokia → Co-founder → "Follow
         # me") to walk with you — trailing you through the office AND out in the park.
         # Toggled from the phone; the per-frame trailing lives in _update_companion.
@@ -132,7 +137,25 @@ class Game:
         self.intern = Character(name="Eager Intern", role="Intern", x=0.0, z=0.0,
                                 color=pr.Color(150, 210, 120, 255), dept="Operations",
                                 model="Casual_Male.gltf", yaw=0.0)
+        roster.apply_look(self.intern, {"skin_idx": 4, "hair_idx": 0, "eye_idx": 1})
         self._intern_park = None       # bound to a GreenSpace in _enter_park
+        # Bob, your childhood friend: waiting right where you spawn the first time you
+        # arrive in the city, with a "!" overhead. Walk up + E and he welcomes you back
+        # and presses $1,000 of seed money into your hand — a one-time gift, gated on
+        # the persistent `bob_gift` flag so he's gone afterward (and stays gone after a
+        # restart). _bob_done is loaded from the store once the link exists.
+        self.bob = Character(name="Bob", role="Old Friend", x=0.0, z=0.0,
+                             color=pr.Color(225, 170, 120, 255), dept="Friend",
+                             model="Casual2_Male.gltf", yaw=180.0)
+        roster.apply_look(self.bob, {"skin_idx": 2, "hair_idx": 2, "hair_style": 1, "eye_idx": 2})
+        self._bob_voice = voice.pick_voice("Bob")
+        self._bob_done = False         # set from link.load_flag("bob_gift") below
+        self._bob_talk = None          # current line index while chatting, else None
+        self._bob_mode = "welcome"     # which conversation is active: welcome | rescue
+        # Emergency rescue: when you go broke, Bob texts you to meet at a park for a
+        # one-time $2,500. Both flags load from the store once the link exists.
+        self._bob_rescue_done = False      # already claimed the bailout?
+        self._bob_rescue_pending = False   # texted you, waiting at the park?
         # The building whose interior is currently active (starts at HQ).
         self.current_building = next((b for b in self.park.buildings if b.status == "hq"),
                                      self.park.buildings[0] if self.park.buildings else None)
@@ -152,13 +175,13 @@ class Game:
             self.plan.cols / 2 - 0.5, self.plan.rows - 2)
         ceo.x, ceo.z = ent
         # Master roster (every agent) + the subset standing in the active room.
-        # bot_ctx/Director/meeting hold the *active* lists, so those are mutated in
-        # place (clear+extend) on a room switch, never reassigned.
+        # Characters are the single source of truth; each carries its own .brain,
+        # so there are no parallel brain-lists to keep in sync. bot_ctx/Director/
+        # meeting hold `self.agents` by reference, so it's mutated in place
+        # (clear+extend) on a room switch, never reassigned.
         self.all_agents: list[Character] = []
-        self.all_brains: list[BotBrain] = []
         self.characters: list[Character] = [ceo]
         self.agents: list[Character] = []
-        self.brains: list[BotBrain] = []
         self.player = Player(ceo)
         self.camera = ThirdPersonCamera((ceo.x, ceo.y, ceo.z))
         self.selected = -1  # index into self.agents; -1 = nothing selected
@@ -166,6 +189,25 @@ class Game:
 
         # Backend: SQL persistence + one-on-one chat, off the render thread.
         self.link = CompanyLink()
+        # Restore the saved bank balance + leased offices (None/empty on first run, so
+        # a fresh game keeps STARTING_CASH and no offices). Autosaved in the loop and
+        # forced on quit; see _persist_state.
+        saved_cash = self.link.load_cash()
+        if saved_cash is not None:
+            self.cash = saved_cash
+        saved_leases = self.link.load_leases()
+        for b in self.park.buildings:
+            if b.id in saved_leases:
+                self.park.lease(b)
+        self.calendar.load_state(self.link.load_calendar())  # restore the in-game date
+        self.season.set_day(self.calendar.day)               # foliage matches the restored date
+        self._bob_done = self.link.load_flag("bob_gift")   # already got the welcome gift?
+        self._bob_rescue_done = self.link.load_flag("bob_rescue")
+        self._bob_rescue_pending = self.link.load_flag("bob_rescue_pending")
+        self._last_persist = 0.0
+        self._saved_cash = int(self.cash)
+        self._saved_day = self.calendar.day
+        self._saved_leases = {b.id for b in self.park.buildings if b.status == "leased"}
         # Purchased outfit ids (premium marketplace models + premium CEO suits). One
         # unlock makes that outfit reusable for free on any CEO/agent; persists.
         self.unlocked = self.link.load_unlocks()
@@ -179,6 +221,7 @@ class Game:
         self.investor = InvestorPanel()    # pitch the VC for a funding round
         self.market = market_mod.Market.load(self.link)   # idle stock-market state
         self.market_panel = MarketPanel()  # bank/broker trading terminal
+        self.slot_panel = SlotPanel()      # Lucky's Casino slot machine
         self.grant_panel = GrantPanel()    # Grants Office: LLM-judged funding
         self.chat = ChatPanel(self.link)
         self.shop = ShopPanel(load_catalog())
@@ -236,10 +279,12 @@ class Game:
             bounds=lambda: self.park.bounds,
             markers=self._map_markers,
         )
+        # Clock app: the phone reads the live date + time-of-day (to the minute).
+        clock_bridge = SimpleNamespace(state=self._clock_state)
         self.phone = PhonePanel(self.link, self.coordinator,
                                 lambda: self.all_agents, self.inbox, self.taskboard,
                                 hire=hire_bridge, follow=follow_bridge,
-                                citymap=citymap_bridge)
+                                citymap=citymap_bridge, clock=clock_bridge)
         self.inbox.post("Company.AI",
                         "Welcome! Your team and the neighborhood reach you here. "
                         "Open the phone (N) and tap a message to read it.",
@@ -248,7 +293,7 @@ class Game:
         self.used_names: set[str] = set()
 
         self.bot_ctx = BotContext(nav=None, ceo=ceo, agents=self.agents)
-        self.director = Director(self.brains)
+        self.director = Director(self.agents)
         self.chat.command_handler = self.handle_chat_command   # NL movement commands in chat
         self._chatting: Character | None = None   # bot held still while the CEO talks to it
         self._planned: set[str] = set()           # agent ids whose policy is applied/requested
@@ -281,6 +326,7 @@ class Game:
         self._quest_buf = ""
         self._quest_line = 0            # which dialogue line of the current beat is showing
         self._quest_action = None       # store kind ("outfit"/"hire") when a greeting ends by opening a shop; None for a normal ask
+        self._reception_greeted = False  # front-desk greeting fires once per lobby visit; re-armed on each room entry
         # Quest buildings are entered like offices: you walk into a default floor and
         # talk (E) to one NPC inside. These hold the in-visit state; None when not in one.
         self._quest_building = None     # the NpcBuilding whose interior we're inside
@@ -307,6 +353,14 @@ class Game:
         rebuild themselves when the player next walks into one."""
         self.link.reset_company()
         self.cash = config.STARTING_CASH
+        # New game: forget the old save snapshot so the fresh balance/leases persist.
+        self._saved_cash, self._saved_leases, self._last_persist = -1, set(), 0.0
+        # Bob's welcome gift + emergency rescue are available again in the new city.
+        self._bob_done, self._bob_talk = False, None
+        self._bob_rescue_done, self._bob_rescue_pending = False, False
+        self.link.set_flag("bob_gift", False)
+        self.link.set_flag("bob_rescue", False)
+        self.link.set_flag("bob_rescue_pending", False)
         self.company_name = "Company.AI"
         self.ceo_profile = None
         self.company = {}
@@ -317,7 +371,7 @@ class Game:
         self.taskboard = tasks.TaskBoard(set())
         self.phone.board = self.taskboard
         self.market = market_mod.Market.fresh()       # fresh portfolio for the new run
-        for lst in (self.all_agents, self.all_brains, self.agents, self.brains):
+        for lst in (self.all_agents, self.agents):
             lst.clear()
         self.characters[:] = [self.player.ch]
         self.selected = -1
@@ -399,6 +453,13 @@ class Game:
             return
         self.market.save(self.link)
 
+    def _do_slot_action(self, action) -> None:
+        """Apply a slot-machine result to cash (single money source). The panel
+        guards spins against the balance, so this only ever adds the wager back as
+        a loss or credits a win."""
+        if action and action[0] == "cash":
+            self.cash = max(0, self.cash + action[1])
+
     def _refresh_tasks(self) -> None:
         """Auto-complete any to-do whose condition now holds (a role hired, a
         building leased, the team grown) and persist if anything newly ticked."""
@@ -429,11 +490,7 @@ class Game:
         # (now "business_model"), which is the avatar gltf — fall back if it's not one.
         model = p.get("model") or config.CEO_MODEL
         ceo.model = model if model.endswith((".gltf", ".glb")) else config.CEO_MODEL
-        ceo.skin_tone = roster.tone_color(p.get("skin_idx", 0))
-        ceo.hair_tone = roster.palette_color(config.HAIR_COLORS, p.get("hair_idx", 0))
-        ceo.outfit_tone = roster.palette_color(config.SUIT_COLORS, p.get("suit_idx", 0))
-        ceo.eye_tone = roster.palette_color(config.EYE_COLORS, p.get("eye_idx", 0))
-        ceo.hair_style = p.get("hair_style", 0)
+        roster.apply_look(ceo, p)   # skin/hair/eye/suit tone + hair_style from the profile
         # The company profile is the source of truth for the name; only fall back to
         # the prologue's company_name when the profile hasn't got one yet.
         if not self.company.get("name") and p.get("company_name"):
@@ -498,9 +555,13 @@ class Game:
             agent.hair_style = appearance.get("hair_style", 0)
         agent.brain = BotBrain(agent, default_policy(agent, (0.0, 0.0)), self.bot_ctx)
         self.all_agents.append(agent)
-        self.all_brains.append(agent.brain)
         self.used_names.add(name)
         return agent
+
+    def _active_brains(self) -> list:
+        """Brains of the agents on the active floor — derived from self.agents (the
+        single source of truth) so there's no parallel list that can drift."""
+        return [a.brain for a in self.agents if a.brain is not None]
 
     def _show_room(self, room_key: str) -> None:
         """Make the agents homed in `room_key` the active set: seat them at this
@@ -508,8 +569,7 @@ class Game:
         bot_ctx / Director / the meeting panel keep working). Lobbies show none."""
         plan = self.plan
         members = [a for a in self.all_agents if a.home_room == room_key]
-        self.agents[:] = members
-        self.brains[:] = [a.brain for a in members]
+        self.agents[:] = members          # held by reference by bot_ctx/Director/meeting
         self.characters[:] = [self.player.ch] + members
         cap = plan.desk_capacity()
         for i, a in enumerate(members):
@@ -571,7 +631,7 @@ class Game:
     def _pump_policies(self) -> None:
         """Each frame: apply any ready authored policy; otherwise request one for
         an un-planned agent, rate-limited by the Director's LLM budget."""
-        for brain in self.brains:
+        for brain in self._active_brains():
             aid = brain.ch.backend_id
             if not aid:
                 continue
@@ -618,7 +678,7 @@ class Game:
         if intent is None:
             return None
         if intent.all_bots:
-            for brain in self.brains:
+            for brain in self._active_brains():
                 brain.command("gather", target=intent.target)
         else:
             agent.brain.command(intent.kind, target=intent.target)
@@ -693,6 +753,14 @@ class Game:
     # -- department -> wing assignment ----------------------------------------
     _RECEPTION_KEYS = ("reception", "front desk", "concierge", "receptionist")
 
+    @classmethod
+    def _is_reception(cls, a) -> bool:
+        """A reception-type hire — matched on role OR dept, so a 'Receptionist'
+        lands at the front desk no matter which department it's filed under
+        (its dept_key is 'operations', which wouldn't match on its own)."""
+        tag = f"{getattr(a, 'role', '') or ''} {getattr(a, 'dept', '') or ''}".lower()
+        return any(k in tag for k in cls._RECEPTION_KEYS)
+
     def _assign_rooms(self) -> None:
         """Spread the roster across the building's wings by department (each dept
         gets a wing; teammates stay together). Reception-type roles go to the
@@ -715,7 +783,7 @@ class Game:
             if a.home_room in valid:
                 continue                          # keep a good existing assignment
             d = self._dept_key(a)
-            if reception_key and any(k in d for k in self._RECEPTION_KEYS):
+            if reception_key and self._is_reception(a):
                 a.home_room = reception_key
             else:
                 if d not in dept_wing:
@@ -919,6 +987,140 @@ class Game:
                             kind="system", subject="✓ Take on your first intern",
                             ts=pr.get_time())
 
+    # -- Bob, your childhood friend (welcome gift + emergency rescue) ----------
+    BOB_GIFT = 1000
+    BOB_LINES = [
+        "Hey — look who it is! Welcome back to the city.",
+        "I always knew you'd come back to build something of your own. I'm happy for you, truly.",
+        "Starting out's the hard part. Here — take this. A thousand bucks to get you going.",
+        "No, I insist. Go make it count — I've got high hopes for you.",
+    ]
+    # When you go flat broke, Bob texts you to meet at a park and spots you cash.
+    BOB_RESCUE_GIFT = 2500
+    BOB_RESCUE_PARK_ID = "maple_commons"
+    BOB_RESCUE_LINES = [
+        "Hey, you made it. I got worried when I heard things had gotten tight.",
+        "Listen — nobody builds anything in a straight line. Being broke for a minute doesn't mean you failed.",
+        "I've got you. Here's twenty-five hundred — an emergency stake, friend to friend.",
+        "Pay me back by making it work. Now go — you've got this.",
+    ]
+
+    def _bob_lines(self, mode: str) -> list[str]:
+        return self.BOB_RESCUE_LINES if mode == "rescue" else self.BOB_LINES
+
+    def _talk_to_bob(self, mode: str = "welcome") -> None:
+        """Begin a Bob conversation (freezes the park; stepped with E). `mode` is
+        'welcome' (the spawn gift) or 'rescue' (the broke-bailout at the park)."""
+        self._bob_mode = mode
+        self._bob_talk = 0
+        self._e_cooldown = 8
+        voice.speak(self._bob_lines(mode)[0], self._bob_voice)
+        while pr.get_char_pressed() > 0:       # swallow the E that opened the chat
+            pass
+
+    def _update_bob_talk(self) -> None:
+        """Step through Bob's lines on E/Enter/Space; the last one hands over cash."""
+        advance = (pr.is_key_pressed(pr.KEY_E) or pr.is_key_pressed(pr.KEY_ENTER)
+                   or pr.is_key_pressed(pr.KEY_SPACE) or gamepad.pressed(gamepad.CROSS)
+                   or gamepad.pressed(gamepad.TRIANGLE))
+        if not advance:
+            return
+        lines = self._bob_lines(self._bob_mode)
+        self._bob_talk += 1
+        if self._bob_talk >= len(lines):
+            self._finish_bob()
+        else:
+            voice.speak(lines[self._bob_talk], self._bob_voice)
+
+    def _finish_bob(self) -> None:
+        """Close the conversation, grant the gift, and lock it as claimed for good."""
+        self._bob_talk = None
+        self._e_cooldown = 8
+        if self._bob_mode == "rescue":
+            self._bob_rescue_done = True
+            self._bob_rescue_pending = False
+            self.cash += self.BOB_RESCUE_GIFT
+            self.link.set_flag("bob_rescue", True)
+            self.link.set_flag("bob_rescue_pending", False)
+            self.inbox.post("Bob", f"Slipped you ${self.BOB_RESCUE_GIFT:,} — no strings, "
+                            "just don't give up on this. Call me if it gets tight again.",
+                            kind="system", subject=f"Emergency stake · +${self.BOB_RESCUE_GIFT:,}",
+                            ts=pr.get_time())
+        else:
+            self._bob_done = True
+            self.cash += self.BOB_GIFT
+            self.link.set_flag("bob_gift", True)
+            self.inbox.post("Bob", "So good to see you back in the city. I slipped you "
+                            f"${self.BOB_GIFT:,} to get started — no strings. Go build "
+                            "something great; I've got high hopes for you.",
+                            kind="system", subject=f"An old friend · +${self.BOB_GIFT:,}",
+                            ts=pr.get_time())
+        self._persist_state(force=True)        # lock in the new balance now
+
+    # -- Bob's emergency rescue (triggered when you hit $0) -------------------
+    def _bob_rescue_spot(self):
+        """The park where Bob waits to bail you out — a named green space, kept
+        clear of the intern's lawn. Deterministic so it survives a restart."""
+        parks = self.park.parks
+        return (next((g for g in parks if g.id == self.BOB_RESCUE_PARK_ID), None)
+                or next((g for g in parks if g.id != "founders_green"), None)
+                or (parks[0] if parks else None))
+
+    def _check_bob_rescue(self) -> None:
+        """Once you've met Bob and then run flat broke, he texts you to meet up and
+        spot you an emergency stake — a one-time safety net (gated so starting at $0
+        before the welcome gift doesn't trip it)."""
+        if (self._bob_done and not self._bob_rescue_done
+                and not self._bob_rescue_pending and self.cash <= 0):
+            self._trigger_bob_rescue()
+
+    def _trigger_bob_rescue(self) -> None:
+        spot = self._bob_rescue_spot()
+        self._bob_rescue_pending = True
+        self.link.set_flag("bob_rescue_pending", True)
+        where = spot.name if spot is not None else "the park"
+        self.inbox.post("Bob", "Hey — word travels. I can tell money's gotten tight, and "
+                        f"that's alright. Come find me at {where} and I'll spot you "
+                        f"${self.BOB_RESCUE_GIFT:,} to get back on your feet. That's what "
+                        "friends are for — don't be a stranger.", kind="system",
+                        subject="Bob wants to meet up", ts=pr.get_time())
+        if self.mode == "park" and spot is not None:    # place him now if you're outside
+            self.bob.x, self.bob.z, self.bob.y = spot.x + 2.0, spot.z + 1.0, 0.0
+
+    def _draw_bob_talk(self) -> None:
+        """The childhood-friend speech box at the bottom of the screen."""
+        lines = self._bob_lines(self._bob_mode)
+        line = lines[self._bob_talk]
+        W, H = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+        bw, bh = min(880, W - 80), 156
+        x, y = (W - bw) // 2, H - bh - 40
+        accent = pr.Color(225, 170, 120, 255)
+        pr.draw_rectangle(x, y, bw, bh, pr.Color(12, 16, 26, 235))
+        pr.draw_rectangle_lines_ex(pr.Rectangle(x, y, bw, bh), 2, accent)
+        pr.draw_text("BOB", x + 22, y + 16, 22, accent)
+        pr.draw_text("your childhood friend", x + 80, y + 22, 14, pr.Color(150, 160, 180, 255))
+        # Word-wrap the spoken line to the box width.
+        rows, cur = [], ""
+        for word in line.split():
+            trial = (cur + " " + word).strip()
+            if pr.measure_text(trial, 22) > bw - 44:
+                rows.append(cur)
+                cur = word
+            else:
+                cur = trial
+        if cur:
+            rows.append(cur)
+        ty = y + 54
+        for row in rows[:3]:
+            pr.draw_text(row, x + 22, ty, 22, pr.RAYWHITE)
+            ty += 30
+        is_last = self._bob_talk == len(self.BOB_LINES) - 1
+        hint = f"Press  E / X  to accept  +${self.BOB_GIFT:,}" if is_last \
+            else "Press  E / X  to continue"
+        hw = pr.measure_text(hint, 16)
+        pr.draw_text(hint, x + bw - hw - 22, y + bh - 28, 16,
+                     pr.GOLD if is_last else pr.LIGHTGRAY)
+
     # -- shop -----------------------------------------------------------------
     def buy_item(self, item: dict) -> None:
         """Charge for a shop item: paint recolors the room, furniture is placed."""
@@ -968,6 +1170,47 @@ class Game:
         if 0 <= self.selected < len(self.agents):
             return self.agents[self.selected]
         return self._nearest_agent()
+
+    # -- front-desk receptionist: greet the CEO on walk-up --------------------
+
+    def _reception_agent(self) -> Character | None:
+        """The reception-role bot on the active floor (its home_room is the lobby,
+        so it's only here in a lobby that has one), or None."""
+        for a in self.agents:
+            if a.brain is not None and self._is_reception(a):
+                return a
+        return None
+
+    def _reception_line(self, rec: Character) -> str:
+        """A short, warm front-desk greeting, personalized with the company name
+        when one's been decided."""
+        name = (self.company.get("name") or "").strip()
+        place = name or "the office"
+        first = (rec.name or "").split(" ")[0] or "the front desk"
+        return random.choice([
+            f"Welcome to {place}! The team's upstairs — need anything?",
+            f"Hey boss! Good to see you at {place} — everyone's hard at work up top.",
+            f"Morning! {first} here at the front desk; give me a shout if you need anything.",
+            "Welcome back! Want me to point you to anyone on the team?",
+        ])
+
+    def _greet_at_reception(self) -> None:
+        """Once per lobby visit, when the CEO walks within talk range of the
+        receptionist, have them greet — a world speech bubble AND aloud."""
+        if self._reception_greeted:
+            return
+        if self.chat.open or self.phone.open or self.meeting.open or self.drive.open:
+            return                              # don't talk over an open panel
+        rec = self._reception_agent()
+        if rec is None:
+            return
+        ceo = self.player.ch
+        if math.hypot(rec.x - ceo.x, rec.z - ceo.z) > TALK_RANGE:
+            return
+        self._reception_greeted = True
+        line = self._reception_line(rec)
+        rec.brain.say(line, secs=4.5)                   # world speech bubble
+        voice.speak(line, voice.pick_voice(rec.name))   # ...and aloud (macOS say)
 
     def _freeze_chat_target(self, target: Character) -> None:
         """Hold a bot still (and facing the CEO) for the duration of a chat."""
@@ -1059,10 +1302,12 @@ class Game:
         out: list[dict] = []
         for b in self.park.buildings:
             leased = b.status != "available"
+            # Your own buildings all share one bright "yours" gold (matches the map
+            # legend) so they read as a group; lease lots are orange.
             if b.status == "hq":
-                col, kind = (255, 214, 110), "hq"
+                col, kind = (255, 222, 120), "hq"
             elif leased:
-                col, kind = tuple(b.color), "office"
+                col, kind = (255, 222, 120), "office"
             else:
                 col, kind = (235, 150, 70), "lease"
             label = b.name if leased else f"{b.name} — lease ${b.deposit:,}"
@@ -1086,7 +1331,35 @@ class Game:
         if self._intern_park is not None and not self.taskboard.is_done("intern"):
             out.append({"x": self.intern.x, "z": self.intern.z, "color": (150, 230, 150),
                         "label": "Eager Intern", "kind": "intern"})
+        if not self._bob_done:
+            out.append({"x": self.bob.x, "z": self.bob.z, "color": (225, 170, 120),
+                        "label": "Bob (old friend)", "kind": "friend"})
+        elif self._bob_rescue_pending and not self._bob_rescue_done:
+            out.append({"x": self.bob.x, "z": self.bob.z, "color": (225, 170, 120),
+                        "label": "Bob (meet up)", "kind": "friend"})
         return out
+
+    # -- save game (cash + leases) --------------------------------------------
+    def _persist_state(self, force: bool = False) -> None:
+        """Write cash + leased offices through to the store when they change. Cash
+        moves in dozens of places (rent, hiring, shopping, the market, rewards), so
+        rather than save at every call site we snapshot here once per frame, throttled
+        to ~2s of real time, plus a forced flush on quit / New World."""
+        now = pr.get_time()
+        if not force and now - self._last_persist < 2.0:
+            return
+        self._last_persist = now
+        cash = int(self.cash)
+        if force or cash != self._saved_cash:
+            self.link.save_cash(cash)
+            self._saved_cash = cash
+        if force or self.calendar.day != self._saved_day:
+            self.link.save_calendar(self.calendar.to_state())
+            self._saved_day = self.calendar.day
+        leases = {b.id for b in self.park.buildings if b.status == "leased"}
+        if force or leases != self._saved_leases:
+            self.link.save_leases(leases)
+            self._saved_leases = leases
 
     # -- office park ----------------------------------------------------------
     def _enter_park(self) -> None:
@@ -1124,6 +1397,16 @@ class Game:
             self.intern.x = self._intern_park.x + 2.2
             self.intern.z = self._intern_park.z + 1.2
             self.intern.y = 0.0
+        # Until you've taken his gift, Bob stands a few steps ahead of the spawn —
+        # the first face you see arriving in the city — turned to greet you.
+        if not self._bob_done:
+            sx, sz = self.park.spawn
+            self.bob.x, self.bob.z, self.bob.y = sx + 1.2, sz + 2.6, 0.0
+            self.bob.yaw = 180.0
+        elif self._bob_rescue_pending and not self._bob_rescue_done:
+            spot = self._bob_rescue_spot()       # he's waiting at the park to bail you out
+            if spot is not None:
+                self.bob.x, self.bob.z, self.bob.y = spot.x + 2.0, spot.z + 1.0, 0.0
 
     def _enter_office(self, building=None) -> None:
         # Always arrive in the building's lobby (then ride up to the wings). A new
@@ -1186,6 +1469,7 @@ class Game:
         self.scene.set_plan(self.plan, seed=self.room.seed)
         locomotion.set_bounds(*self.plan.bounds())
         self._meeting_active, self._gathered = False, []   # meetings don't span rooms
+        self._reception_greeted = False    # re-arm the front-desk hello for this room
         self._show_room(room_key)          # seat this room's agents (mutates live lists)
         self._rebuild_nav()
         for a in self.agents:              # deskless overflow: park by the meeting table
@@ -1244,6 +1528,9 @@ class Game:
             actor = Character(name=name, role="", x=cx, z=cz,
                               color=pr.Color(120, 200, 160, 255), dept="",
                               model="Suit_Male.gltf", yaw=0.0)
+            # Name-seeded look so each quest NPC has a real (non-black) skin tone,
+            # distinct but stable across runs.
+            roster.apply_look(actor, roster.random_look(random.Random(name)))
         actor.x, actor.z, actor.y = cx, cz, 0.0
         ceo = self.player.ch
         actor.yaw = math.degrees(math.atan2(ceo.x - actor.x, ceo.z - actor.z))
@@ -1287,6 +1574,9 @@ class Game:
             return
         if self.market_panel.open:               # bank/broker: the trading terminal
             self._do_market_action(self.market_panel.draw(self.market, self.cash))
+            return
+        if self.slot_panel.open:                 # the casino: the slot machine
+            self._do_slot_action(self.slot_panel.draw(self.cash))
             return
         if self.grant_panel.open:                # Grants Office: LLM-judged funding
             self._drive_grant_panel()
@@ -1347,14 +1637,23 @@ class Game:
             self.grant_panel.open_panel()
             self._e_cooldown = 8
             return
+        if getattr(npc, "game", None) == "slots":  # the casino: one-time tips, then the slots
+            pending = npc.pending(self.taskboard.done)
+            if pending:                            # first visit: the pit boss's risk talk
+                self._open_quest_task(npc, pending[0])
+                return
+            self.slot_panel.open_panel()
+            self._e_cooldown = 8
+            return
         pending = npc.pending(self.taskboard.done)
         if not pending:
-            # A lore-only stop (e.g. the city guide) stays open to chat on later
-            # visits — replay its talk, with no second reward (complete() no-ops).
+            # A finished stop still talks back on later visits — replay the NPC's
+            # lines on screen (visible feedback), with no second reward (the
+            # complete() at the end no-ops once it's already done). This covers the
+            # Angel Investor, the civic clerks, the city guide, etc.
             key = npc.task
-            t = tasks.TASK_BY_KEY.get(key) if key else None
-            if key and key in self.dialogue and not (t and t.ask):
-                self._open_quest_task(npc, key)
+            if key and key in self.dialogue:
+                self._open_lore(npc, key)
                 return
             self.inbox.post(npc.name, "Already taken care of — nothing else to do here.",
                             kind="system", subject=npc.name, ts=pr.get_time())
@@ -1373,13 +1672,20 @@ class Game:
             while pr.get_char_pressed() > 0:               # drop the 'e' that opened it
                 pass
         elif key in self.dialogue:        # lore-only stop (e.g. the city guide): play, then complete
-            self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
-            self._quest_line, self._quest_action = 0, "complete"
-            self._e_cooldown = 4
-            while pr.get_char_pressed() > 0:
-                pass
+            self._open_lore(npc, key)
         else:
             self._complete_quest_stop(npc, key)
+
+    def _open_lore(self, npc, key: str) -> None:
+        """Open the dialogue modal in play-then-finish mode (no input field): step
+        the beat's lines, then _complete_quest_stop on the last one. The complete()
+        is a no-op reward-wise once the to-do is done, so this doubles as the on-
+        screen replay when you revisit a finished stop (Angel Investor, clerks…)."""
+        self._quest_input, self._quest_task, self._quest_buf = npc, key, ""
+        self._quest_line, self._quest_action = 0, "complete"
+        self._e_cooldown = 4
+        while pr.get_char_pressed() > 0:
+            pass
 
     def _open_store_greeting(self, npc) -> None:
         """A shop NPC (Tailor / Recruiter) greets you, then opening the shop happens
@@ -1546,12 +1852,17 @@ class Game:
         # an investor meeting is open.
         frozen = (self._quest_input is not None
                   or self.dossier.open or self.investor.open or self.phone.open
-                  or self.shop.open)
+                  or self.shop.open or self._bob_talk is not None)
         if self.phone.open:                    # the Nokia works out in the city too
             self.phone.update()
+        if self._bob_talk is not None:         # mid-greeting: the speech box owns input
+            self._update_bob_talk()
         # Your first intern waits in a park until taken on (the "intern" quest).
         show_intern = (self._intern_park is not None
                        and not self.taskboard.is_done("intern"))
+        # Bob is out here for the welcome gift, or waiting at a park to bail you out.
+        show_bob = (not self._bob_done
+                    or (self._bob_rescue_pending and not self._bob_rescue_done))
         if not frozen:
             self.player.update(dt, self.camera)
             ceo.x, ceo.z = self.park.collide(ceo.x, ceo.z)   # block walking through buildings
@@ -1562,6 +1873,9 @@ class Game:
                                                           ceo.z - self.intern.z))
                 self.intern.update(dt, self.registry)
             self._update_companion(dt)           # Robin trails you across the park
+        if show_bob:                             # keep Bob turned toward you, idling
+            self.bob.yaw = math.degrees(math.atan2(ceo.x - self.bob.x, ceo.z - self.bob.z))
+            self.bob.update(dt, self.registry)
         self.pedestrians.update(dt, ceo.x, ceo.z, self.registry)  # ambient crowd
         near = self.park.nearest(ceo.x, ceo.z)
         # Quest-stop NPC buildings (Chamber of Commerce, …) are only offered when no
@@ -1570,6 +1884,8 @@ class Game:
         intern_near = (show_intern and near is None and near_npc is None
                        and math.hypot(self.intern.x - ceo.x, self.intern.z - ceo.z)
                        <= parkmod.REACH)
+        bob_near = (show_bob and near is None and near_npc is None
+                    and math.hypot(self.bob.x - ceo.x, self.bob.z - ceo.z) <= parkmod.REACH)
 
         if not frozen:
             if pr.is_key_pressed(pr.KEY_P):
@@ -1595,6 +1911,8 @@ class Game:
                 self._enter_quest_building(near_npc); return
             elif intern_near and press_e:        # the park intern → take them on (free)
                 self._take_on_intern()
+            elif bob_near and press_e:           # childhood friend → welcome gift or rescue
+                self._talk_to_bob("welcome" if not self._bob_done else "rescue")
 
         pr.begin_drawing()
         pr.clear_background(self.daylight.sky_color())
@@ -1606,12 +1924,17 @@ class Game:
             # same cyan ring + "!" diamond as every quest stop (one shared impl)
             self.park.draw_quest_indicator(self.intern.x, self.intern.z,
                                            self.intern.height + 1.4)
+        if show_bob:
+            self.bob.draw(self.registry)
+            self.park.draw_quest_indicator(self.bob.x, self.bob.z, self.bob.height + 1.4)
         if self.robin_following:
             self.robin.draw(self.registry)
         ceo.draw(self.registry)
         pr.end_mode_3d()
         self._draw_park_overlay(near, near_npc)
         self._draw_companion_chip()
+        if self._bob_talk is not None:           # childhood friend's greeting, on top
+            self._draw_bob_talk()
         if self._quest_input is not None:        # quest-stop decision capture, on top
             self._draw_quest_input()
         self._do_dossier_action(self.dossier.draw(self.company))
@@ -1648,13 +1971,22 @@ class Game:
             sw = pr.measure_text(sub, 13)
             pr.draw_text(sub, sx - sw // 2, sy + 18, 13, sub_color)
 
-    def _draw_clock(self) -> None:
-        """Top-center chip naming the current time-of-day phase and season."""
-        label = f"{self.daylight.phase_name}  ·  {self.season.name}"
-        w = pr.measure_text(label, 20)
-        x = config.WINDOW_WIDTH // 2 - w // 2
-        pr.draw_rectangle(x - 12, 12, w + 24, 30, pr.Color(20, 24, 34, 200))
-        pr.draw_text(label, x, 16, 20, pr.Color(235, 220, 170, 255))
+    def _clock_state(self) -> dict:
+        """Snapshot for the phone's Clock app: in-game time to the minute, the date,
+        the day/night phase and the season. The daylight clock (0..day_seconds) maps
+        onto a 24h day, with clock 0 = 00:00 (Midnight)."""
+        d = self.daylight
+        frac = (d.clock / d.day_seconds) % 1.0
+        total_min = int(frac * 24 * 60)
+        cal = self.calendar
+        return {
+            "hh": total_min // 60, "mm": total_min % 60,
+            "weekday": cal.weekday,
+            "date": cal.label(),
+            "day_number": cal.day_number,
+            "phase": d.phase_name,
+            "season": self.season.name,
+        }
 
     def _draw_companion_chip(self) -> None:
         """Top-center chip confirming Robin is walking with you (office + park),
@@ -1743,7 +2075,6 @@ class Game:
         # rent-due progress bar
         pr.draw_rectangle(600, 44, 200, 6, pr.Color(60, 64, 76, 255))
         pr.draw_rectangle(600, 44, int(200 * self.park.rent_progress()), 6, pr.Color(210, 130, 130, 255))
-        self._draw_clock()
 
         # interaction prompt — lease lots take priority, else a quest-stop offer.
         prompt, afford = None, True
@@ -1786,6 +2117,12 @@ class Game:
         pr.init_window(config.WINDOW_WIDTH, config.WINDOW_HEIGHT, config.WINDOW_TITLE)
         pr.set_target_fps(config.TARGET_FPS)
         pr.set_exit_key(pr.KEY_NULL)   # Esc must NOT quit the game; it only closes the chat
+        # Tighten the depth range. raylib's default near=0.01 wrecks depth precision
+        # in the distance, so coplanar building geometry (window panes vs walls) and
+        # the street z-fight/flicker far from the camera. The camera never sits closer
+        # than ~4 units to its target and nothing draws past the ~62-unit cull, so a
+        # near of 0.5 / far of 250 is safe and gives ~100x better far-depth precision.
+        pr.rl_set_clip_planes(0.5, 250.0)
         shop_btn = Button(config.WINDOW_WIDTH - 230, config.WINDOW_HEIGHT - 90, 210, 50, "Shop  (B)")
         meeting_btn = Button(config.WINDOW_WIDTH - 230, config.WINDOW_HEIGHT - 154, 210, 50, "Meeting  (G)")
         park_btn = Button(config.WINDOW_WIDTH - 230, config.WINDOW_HEIGHT - 218, 210, 50, "Office Park  (P)")
@@ -1847,16 +2184,22 @@ class Game:
             if rent:                    # once per in-game month: checkpoint the market
                 self.market.save(self.link)   # (stamps last_seen for offline catch-up)
 
+            # Checkpoint cash + leased offices (throttled inside) so the balance and
+            # your buildings survive a restart, not just the market/roster.
+            self._persist_state()
+            # If you've gone flat broke, Bob texts you to meet up for an emergency stake.
+            self._check_bob_rescue()
+
             # Advance the day/night cycle and feed it to the character shader (the
             # sky color is read per-frame in each draw path). T peeks at the next
             # phase without waiting for the clock.
-            self.daylight.advance(dt)
+            self.calendar.advance(self.daylight.advance(dt))
             if pr.is_key_pressed(pr.KEY_T):
-                self.daylight.skip_phase()
+                self.calendar.advance(self.daylight.skip_phase())
             self.registry.set_daylight(self.daylight)
 
             # Seasons drift much slower than the day; trees swap foliage as it turns.
-            self.season.advance(dt)
+            self.season.set_day(self.calendar.day)  # season tracks the calendar (7 days each)
 
             # Release agents whose background reply has landed, even if their chat
             # panel is closed — otherwise they stay stuck showing "working".
@@ -1876,14 +2219,14 @@ class Game:
             # C toggles the Company Dossier (view/edit the decisions agents read).
             if pr.is_key_pressed(pr.KEY_C) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
-                    and not self.grant_panel.open:
+                    and not self.grant_panel.open and not self.slot_panel.open:
                 self.dossier.toggle()
             # N toggles the Nokia phone from anywhere (office OR city) — press again to
             # close. Skipped while a text field owns the keyboard (incl. the phone's own
             # message screens, where N should type a letter, not slam the phone shut).
             if pr.is_key_pressed(pr.KEY_N) and not self.chat.open \
                     and not self.dossier.capturing and not self.market_panel.open \
-                    and not self.grant_panel.open \
+                    and not self.grant_panel.open and not self.slot_panel.open \
                     and not self.phone.capturing and self._quest_input is None:
                 if self.phone.open:
                     self.phone.close()
@@ -1908,7 +2251,7 @@ class Game:
             elif self.elevator_open or self.shop.open:
                 pass  # the modal handles its own input inside draw()
             elif (self.dossier.open or self.investor.open or self.market_panel.open
-                  or self.grant_panel.open):
+                  or self.grant_panel.open or self.slot_panel.open):
                 pass  # a full-screen panel is up; it's modal — freeze movement/keys
             elif self._quest_input is not None:
                 pass  # talking to a quest NPC; the dialogue modal owns the keyboard
@@ -1974,8 +2317,9 @@ class Game:
                 self._pump_policies()       # author/apply LLM policies (rate-limited)
                 self._sync_meeting_gather()  # pull bots to the table during a meeting
                 self.director.tick(dt)
-                for brain in self.brains:
+                for brain in self._active_brains():
                     brain.update(dt)
+                self._greet_at_reception()      # front-desk hello on walk-up
 
             for ch in self.characters:
                 ch.update(dt, self.registry)
@@ -1994,7 +2338,6 @@ class Game:
             self._draw_agent_status()
             self._draw_meeting_badges()
             self._draw_bubbles()
-            self._draw_clock()
             self._draw_companion_chip()
 
             if self.chat.open:
@@ -2046,6 +2389,7 @@ class Game:
             pr.end_drawing()
 
         self.market.save(self.link)        # checkpoint the portfolio + last_seen on quit
+        self._persist_state(force=True)    # flush cash + leases on quit
         self.chat.voice.shutdown()
         self.meeting_link.shutdown()
         self.coordinator.shutdown()
@@ -2221,4 +2565,6 @@ class Game:
 
 
 if __name__ == "__main__":
+    from game import npc_validate
+    npc_validate.report()          # warn on park_lots ↔ tasks ↔ dialogue drift (non-fatal)
     Game().run()

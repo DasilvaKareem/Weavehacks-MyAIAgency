@@ -148,7 +148,8 @@ EYE_COLORS = [
 # Real seconds for one full day/night cycle. The world walks through eight
 # phases (Midnight->Dawn->Morning->Noon->Afternoon->Dusk->Evening->Night) over
 # this span; see game/daylight.py. Press T in-game to peek at the next phase.
-DAY_SECONDS = 360.0
+# 1200s = 20 real minutes per in-game day (~3 days per real hour).
+DAY_SECONDS = 1200.0
 
 # --- Office decor ---
 # Seed for the procedural furniture scatter. Same seed -> same office layout

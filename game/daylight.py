@@ -83,15 +83,25 @@ class DayCycle:
             if start in PHASE_NAMES else 0.0
         self._recompute()
 
-    def advance(self, dt: float) -> None:
-        self.clock = (self.clock + dt) % self.day_seconds
+    def advance(self, dt: float) -> int:
+        """Move the clock by `dt` real-seconds. Returns how many whole days rolled
+        over (the clock passing Midnight) so the calendar can count days."""
+        self.clock += dt
+        rolled = int(self.clock // self.day_seconds)
+        if rolled:
+            self.clock %= self.day_seconds
         self._recompute()
+        return rolled
 
-    def skip_phase(self) -> None:
-        """Jump straight to the start of the next phase (handy for a peek key)."""
+    def skip_phase(self) -> int:
+        """Jump straight to the start of the next phase (handy for a peek key).
+        Returns 1 if that jump crossed Midnight into a new day, else 0."""
         step = self.day_seconds / len(PHASES)
-        self.clock = (math.floor(self.clock / step) + 1) * step % self.day_seconds
+        nxt = (math.floor(self.clock / step) + 1) * step
+        rolled = int(nxt // self.day_seconds)
+        self.clock = nxt % self.day_seconds
         self._recompute()
+        return rolled
 
     def _recompute(self) -> None:
         n = len(PHASES)

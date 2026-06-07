@@ -58,7 +58,6 @@ def _team(n: int) -> Callable[[dict], bool]:
 # Ordered quest line. Chapters are just headings; order is the list order.
 TASKS: list[Task] = [
     # --- Chapter 1: The Idea -------------------------------------------------
-    Task("city_tour",   "The Idea", "Get to know the city",     "Visit Fresh Market and chat with the city guide.",),
     Task("name",        "The Idea", "Name your company",        "Every empire needs a name.",
          ask="What's the company called?", field="company_name", reward=500),
     Task("pitch",       "The Idea", "Write your one-line pitch", "What do you do, in a sentence?",
@@ -75,6 +74,15 @@ TASKS: list[Task] = [
          ask="Why should Robin bet on you?", field="cofounder_pitch", reward=2000),
     Task("seed",        "The Idea", "Raise your seed money",       "Pitch an angel investor for a first check.",
          ask="Pitch your idea — why fund it?", field="seed_pitch", reward=5000),
+
+    # --- Around Town: chat with the locals for tips + a little cash ----------
+    Task("city_tour",     "Around Town", "Get to know the city",   "Visit Fresh Market and chat with the city guide.",),
+    Task("money_tips",    "Around Town", "Get money-making tips",   "Swing by the Corner Bakery for tips on growing your cash.",),
+    Task("risk_tips",     "Around Town", "Learn to manage risk",   "Lucky's Casino's pit boss talks runway and risk.",),
+    Task("network_tips",  "Around Town", "Learn to network",       "Sharp Cuts' barber on reputation and word of mouth.",),
+    Task("strategy_tips", "Around Town", "Sharpen your strategy",  "Page & Co.'s bookseller on focus and strategy.",),
+    Task("wellness_tips", "Around Town", "Avoid founder burnout",  "The Wellness Pharmacy on pacing yourself.",),
+    Task("hustle_tips",   "Around Town", "Learn to hustle",        "The 24/7 Mart shopkeeper on scrappy early wins.",),
 
     # --- The Business Model Canvas (workshop at the Startup Incubator) -------
     # The canvas's nine blocks; customer segments (customer) and revenue streams

@@ -24,6 +24,7 @@ class ModelRegistry:
         self._anims: dict[str, tuple] = {}   # filename -> (anim_ptr, count)
         self._anim_index: dict[tuple, int] = {}  # (filename, name) -> clip index
         self._mat_index: dict[tuple, int] = {}    # (filename, name) -> material index
+        self._mapped: set[str] = set()  # files whose material map is built (from pristine colors)
         self._missing: set[str] = set()
         self._hair_mesh: dict[str, int] = {}   # filename -> mesh index of its "Hair" mesh
         self._skin_shader = None  # lazily built on first model load (needs GL ctx)
@@ -52,6 +53,11 @@ class ModelRegistry:
             self._skin_shader = skinning.load_skinning_shader()
         skinning.apply_to_model(model, self._skin_shader)
         self._models[filename] = model
+        # Build the material name->index map NOW, while the model's diffuse colors
+        # are still pristine. Per-character tinting mutates those colors at draw, so
+        # if the map were (re)built later it would match names against tinted colors
+        # and mis-assign — collapsing every NPC to one wrong tint. Build once, here.
+        self._build_material_map(filename)
         return self._models[filename]
 
     def get_animations(self, filename: str | None):
@@ -95,26 +101,36 @@ class ModelRegistry:
         """
         if not filename:
             return -1
+        if filename not in self._mapped:
+            self.get(filename)            # loads the model + builds the map (pristine)
+            if filename not in self._mapped:
+                return -1                 # model missing / not a text .gltf
+        # Cache the MISS too: a name this model lacks (e.g. the "Black" suit material
+        # on a casual NPC, or "Hair" on a bald one) is recorded as -1 so it's never
+        # re-derived. Never rebuild the map here — that would read tinted colors.
         key = (filename, name)
-        if key in self._mat_index:
-            return self._mat_index[key]
-        self._build_material_map(filename)
-        return self._mat_index.get(key, -1)
+        if key not in self._mat_index:
+            self._mat_index[key] = -1
+        return self._mat_index[key]
 
     def _build_material_map(self, filename: str) -> None:
         """Map every named glTF material of `filename` to its real raylib index
         by nearest diffuse color, claiming each raylib slot at most once. Built
-        once per file from the freshly-loaded (un-tinted) model, then cached."""
-        model = self.get(filename)
+        exactly once per file (from get(), on load) while colors are pristine —
+        idempotent so a stray call after tinting can't corrupt it."""
+        if filename in self._mapped:
+            return
+        model = self._models.get(filename)
         try:
             with open(self._path(filename)) as fh:
                 gltf_mats = json.load(fh).get("materials", [])
         except (OSError, ValueError):
             gltf_mats = []
         if model is None or not gltf_mats:
-            # Cache a miss for anything asked about this file so we don't re-read.
             for mat in gltf_mats:
                 self._mat_index.setdefault((filename, mat.get("name")), -1)
+            if model is not None:
+                self._mapped.add(filename)   # .glb / no-materials: mapped, all misses
             return
 
         n = model.materialCount
@@ -137,6 +153,7 @@ class ModelRegistry:
             if best >= 0:
                 used.add(best)
             self._mat_index[(filename, nm)] = best
+        self._mapped.add(filename)
 
     def hair_mesh_index(self, filename: str | None) -> int:
         """Mesh index whose material is named "Hair" (-1 if the model has none, e.g.
@@ -163,10 +180,10 @@ class ModelRegistry:
         return idx
 
     def set_daylight(self, cycle) -> None:
-        """Cache the current time-of-day tint. Characters fold this into colDiffuse
-        at draw (the skinning shader's lighting uniforms wouldn't upload on this
-        build, so day/night rides in as a draw tint instead)."""
-        self.char_tint = cycle.model_tint()
+        """No-op for characters: the day/night cycle still drives the sky, but its
+        tint is no longer baked onto character models (the draw-tint approximation
+        looked off in daylight, so characters stay un-tinted / WHITE)."""
+        self.char_tint = pr.WHITE
 
     def unload_all(self) -> None:
         for anims, count in self._anims.values():

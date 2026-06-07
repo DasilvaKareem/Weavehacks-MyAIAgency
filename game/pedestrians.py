@@ -20,7 +20,7 @@ import math
 import random
 from dataclasses import dataclass
 
-from . import locomotion
+from . import config, locomotion, roster
 from .entities import Character
 from .park import BLOCK, AVENUES, STREETS, CENTER, ROAD_W
 
@@ -110,6 +110,14 @@ class Pedestrians:
         x, z = self._world(node)
         ch = Character(name="", role="", x=x, z=z, color=PED_COLOR,
                        model=self.rng.choice(PED_MODELS))
+        # Give each walker a real skin/hair/eye color, else the model's raw "Skin"
+        # material (~black) shows. Keep each model's own hair (hair_style 0) so the
+        # ambient crowd costs no extra draw calls.
+        roster.apply_look(ch, {
+            "skin_idx": self.rng.randrange(len(config.SKIN_TONES)),
+            "hair_idx": self.rng.randrange(len(config.HAIR_COLORS)),
+            "eye_idx": self.rng.randrange(len(config.EYE_COLORS)),
+        })
         ch.yaw = self.rng.uniform(0.0, 360.0)
         ped = _Ped(ch=ch, node=node, prev=node, target=node, tx=x, tz=z,
                    speed=self.rng.uniform(1.3, 2.0))

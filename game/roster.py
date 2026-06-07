@@ -19,6 +19,7 @@ ROLES = [
     ("Sales Rep", "Growth", pr.GOLD),
     ("Financial Analyst", "Finance", pr.GREEN),
     ("Operations Manager", "Operations", pr.VIOLET),
+    ("Receptionist", "Operations", pr.Color(235, 180, 120, 255)),  # front desk: greets you in the lobby
     ("Recruiter", "People", pr.LIME),
     ("Human Resources Manager", "People", pr.RED),   # manages/evaluates/fires agents
     ("Support Specialist", "Operations", pr.SKYBLUE),
@@ -53,6 +54,7 @@ ROLE_RATES = {
     "Financial Analyst": 3_000,
     "Sheets Analyst": 2_500,
     "Operations Manager": 3_500,
+    "Receptionist": 1_500,
     "Support Specialist": 1_500,
     "Executive Assistant": 2_000,
     "Document Manager": 2_000,
@@ -121,16 +123,32 @@ def generate(index: int, used_names: set[str]) -> dict:
     }
 
 
-def random_look() -> dict:
+def random_look(rng=None) -> dict:
     """A full random appearance for an auto-generated hire candidate: random
     skin / hair color / hairstyle / eye color indices (the same keys _spawn_agent
-    and _commit_hire expect)."""
+    and _commit_hire expect). Pass `rng` (e.g. a seeded random.Random) for a
+    reproducible look, else the module-global random is used."""
+    r = rng or random
     return {
-        "skin_idx": random.randrange(len(config.SKIN_TONES)),
-        "hair_idx": random.randrange(len(config.HAIR_COLORS)),
-        "hair_style": random.randrange(len(config.HAIRSTYLES)),
-        "eye_idx": random.randrange(len(config.EYE_COLORS)),
+        "skin_idx": r.randrange(len(config.SKIN_TONES)),
+        "hair_idx": r.randrange(len(config.HAIR_COLORS)),
+        "hair_style": r.randrange(len(config.HAIRSTYLES)),
+        "eye_idx": r.randrange(len(config.EYE_COLORS)),
     }
+
+
+def apply_look(ch, look: dict) -> None:
+    """Tint a Character to a human appearance from a look dict (skin_idx / hair_idx /
+    eye_idx / suit_idx / hair_style; any missing key defaults to 0).
+
+    Without this, a spawned Character keeps the model's raw base materials — whose
+    "Skin" is near-black (~rgb 3,3,3) — so the NPC renders solid black. Every
+    human NPC that isn't a hired agent or the CEO must be run through this."""
+    ch.skin_tone = tone_color(look.get("skin_idx", 0))
+    ch.hair_tone = palette_color(config.HAIR_COLORS, look.get("hair_idx", 0))
+    ch.eye_tone = palette_color(config.EYE_COLORS, look.get("eye_idx", 0))
+    ch.outfit_tone = palette_color(config.SUIT_COLORS, look.get("suit_idx", 0))
+    ch.hair_style = look.get("hair_style", 0)
 
 
 def palette_color(palette: list, idx: int) -> pr.Color:

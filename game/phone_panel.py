@@ -32,6 +32,7 @@ HOME, COFOUNDER, CONTACTS, AGENT, CALL = "home", "cofounder", "contacts", "agent
 INBOX, MESSAGE, TODO = "inbox", "message", "todo"
 CF_MENU = "cf_menu"          # co-founder hub: Follow me / Wait here / Send message
 MAP = "map"                  # city map: POIs + "you are here"
+CLOCK = "clock"              # calendar + in-game time-of-day (to the minute)
 TASKS = "tasks"              # fire tasks to the team queue (idle agents pick them up)
 HIRE, HIRE_ROLE = "hire", "hire_role"        # the hiring app: candidate card → role grid
 
@@ -67,7 +68,7 @@ def _short(text: str, n: int = 40) -> str:
 
 class PhonePanel:
     def __init__(self, link, coordinator, contacts_getter, inbox, taskboard=None,
-                 hire=None, follow=None, citymap=None) -> None:
+                 hire=None, follow=None, citymap=None, clock=None) -> None:
         self.link = link                  # CompanyLink (agent 1:1 chat)
         self.coord = coordinator          # CoordinatorLink (co-founder)
         self._contacts = contacts_getter  # () -> list[Character]
@@ -76,6 +77,7 @@ class PhonePanel:
         self.hire = hire                  # hire bridge (new_candidate/departments/hire), optional
         self.follow = follow              # co-founder follow bridge (is_following/set_following), optional
         self.citymap = citymap            # city-map bridge (here/bounds/markers), optional
+        self.clock = clock                # clock bridge (state() -> date+time dict), optional
         self._map_sel = 0                 # selected POI index on the MAP screen
         self._cand = None                 # the auto-generated candidate awaiting a role
         self._hire_flash = ""             # transient "Office full" / "Hired!" message
@@ -271,6 +273,8 @@ class PhonePanel:
             self._update_cf_menu()
         elif self.screen == MAP:
             self._update_map()
+        elif self.screen == CLOCK:
+            self._update_clock()
         elif self.screen == HIRE:
             self._update_hire()
         elif self.screen == HIRE_ROLE:
@@ -316,7 +320,7 @@ class PhonePanel:
                 or self._softkey_clicked(self._sk_right_rect))
 
     def _update_home(self) -> None:
-        items = 8
+        items = 9
         self._nav(items)
         # Mouse: click a row to pick it.
         ys, rh, lx, lw = self._rows(items)
@@ -352,9 +356,11 @@ class PhonePanel:
         elif self.sel == 4:
             self.screen, self.sel, self._list_top = TODO, 0, 0
         elif self.sel == 5:
-            self.screen, self._map_sel = MAP, 0
+            self.screen, self._map_sel = MAP, self._default_map_sel()
         elif self.sel == 6:
             self.screen, self.input, self._task_flash = TASKS, "", ""
+        elif self.sel == 7:
+            self.screen = CLOCK
         else:
             self.close()
 
@@ -478,38 +484,84 @@ class PhonePanel:
         pr.draw_text("N", mx + ms - 12, my + 3, 12, INK)
         markers = self.citymap.markers()
         sel = min(self._map_sel, len(markers) - 1) if markers else -1
+        white = pr.Color(255, 255, 255, 255)
+        # Pass 1: everything else (small dots), with lease lots drawn HOLLOW so the
+        # empty-for-rent lots visibly recede behind your own filled offices.
         for i, mk in enumerate(markers):
+            if mk["kind"] in ("hq", "office"):
+                continue
             sx, sy = self._map_project(mk["x"], mk["z"], mx, my, ms, ext)
             c = mk["color"]
-            r = 4 if i == sel else 3
-            pr.draw_circle(int(sx), int(sy), r + 1, INK)          # dark halo for contrast
-            pr.draw_circle(int(sx), int(sy), r, pr.Color(c[0], c[1], c[2], 255))
-            if i == sel:
-                pr.draw_circle_lines(int(sx), int(sy), r + 4, pr.Color(255, 255, 255, 255))
-        # "You are here" pin.
+            col = pr.Color(c[0], c[1], c[2], 255)
+            if mk["kind"] == "lease":                              # hollow ring = available
+                pr.draw_circle(int(sx), int(sy), 4, INK)
+                pr.draw_circle(int(sx), int(sy), 3, pr.Color(58, 78, 44, 255))
+                pr.draw_circle_lines(int(sx), int(sy), 4, col)
+            else:
+                pr.draw_circle(int(sx), int(sy), 4, INK)
+                pr.draw_circle(int(sx), int(sy), 3, col)
+        # Pass 2: YOUR buildings (HQ + leased) — big, bright, white-ringed, on top, so
+        # they always stand out from the lease lots and shops around them.
+        for i, mk in enumerate(markers):
+            if mk["kind"] not in ("hq", "office"):
+                continue
+            sx, sy = self._map_project(mk["x"], mk["z"], mx, my, ms, ext)
+            c = mk["color"]
+            pr.draw_circle(int(sx), int(sy), 8, white)            # bold white ring
+            pr.draw_circle(int(sx), int(sy), 6, pr.Color(c[0], c[1], c[2], 255))
+            star = "★" if mk["kind"] == "hq" else "•"
+            sw = pr.measure_text(star, 12)
+            pr.draw_text(star, int(sx - sw / 2), int(sy - 7), 12, INK)
+        # Selection ring on whatever is selected (drawn over the pins).
+        if markers and sel >= 0:
+            ssx, ssy = self._map_project(markers[sel]["x"], markers[sel]["z"], mx, my, ms, ext)
+            pr.draw_circle_lines(int(ssx), int(ssy), 11, white)
+            pr.draw_circle_lines(int(ssx), int(ssy), 12, white)
+        # "You are here" pin (blue), drawn last so it's never hidden.
         here = self.citymap.here()
         if here is not None:
             hx, hz, yaw, facing = here
             sx, sy = self._map_project(hx, hz, mx, my, ms, ext)
             blue = pr.Color(80, 170, 255, 255)
             pr.draw_circle(int(sx), int(sy), 5, blue)
-            pr.draw_circle_lines(int(sx), int(sy), 8, pr.Color(255, 255, 255, 255))
+            pr.draw_circle_lines(int(sx), int(sy), 8, white)
             if facing:                                            # heading line
                 a = math.radians(yaw)
                 pr.draw_line(int(sx), int(sy),
-                             int(sx + math.sin(a) * 11), int(sy - math.cos(a) * 11),
-                             pr.Color(255, 255, 255, 255))
+                             int(sx + math.sin(a) * 11), int(sy - math.cos(a) * 11), white)
         # Readout: selected POI name + distance/heading from you.
         y = my + ms + 6
         if markers and sel >= 0:
             mk = markers[sel]
-            pr.draw_text(_short(mk["label"], 30), lx + 6, y, FONT, INK)
+            tag = "  (yours)" if mk["kind"] in ("hq", "office") else ""
+            pr.draw_text(_short(mk["label"], 28) + tag, lx + 6, y, FONT, INK)
             if here is not None:
                 dx, dz = mk["x"] - here[0], mk["z"] - here[1]
                 info = f"{int(math.hypot(dx, dz))}m {self._compass(dx, dz)}"
                 iw = pr.measure_text(info, 12)
                 pr.draw_text(info, lx + lw - iw - 6, y + 2, 12, INK_DIM)
-        pr.draw_text("◄ ► select · tap a pin", lx + 6, y + 18, 11, INK_DIM)
+        # Legend so the pin styles read at a glance.
+        ly2 = y + 18
+        pr.draw_circle(lx + 10, ly2 + 6, 5, pr.Color(255, 222, 120, 255))
+        pr.draw_text("yours", lx + 18, ly2, 11, INK_DIM)
+        lease_x = lx + 64
+        pr.draw_circle_lines(lease_x, ly2 + 6, 4, pr.Color(235, 150, 70, 255))
+        pr.draw_text("lease", lease_x + 8, ly2, 11, INK_DIM)
+        you_x = lx + 116
+        pr.draw_circle(you_x, ly2 + 6, 4, pr.Color(80, 170, 255, 255))
+        pr.draw_text("you  · ◄►/tap", you_x + 8, ly2, 11, INK_DIM)
+
+    def _default_map_sel(self) -> int:
+        """Open the map with your HQ (else any owned office) pre-selected, so the
+        readout names it and the selection ring lands on it right away."""
+        if self.citymap is None:
+            return 0
+        mks = self.citymap.markers()
+        for want in ("hq", "office"):
+            for i, mk in enumerate(mks):
+                if mk["kind"] == want:
+                    return i
+        return 0
 
     def _update_inbox(self) -> None:
         msgs = self.inbox.messages()
@@ -801,6 +853,8 @@ class PhonePanel:
             self._draw_cf_menu(lx, ly, lw, lh)
         elif self.screen == MAP:
             self._draw_map(lx, ly, lw, lh)
+        elif self.screen == CLOCK:
+            self._draw_clock(lx, ly, lw, lh)
         elif self.screen == HIRE:
             self._draw_hire(lx, ly, lw, lh)
         elif self.screen == HIRE_ROLE:
@@ -858,6 +912,53 @@ class PhonePanel:
                 sw_ = pr.measure_text(sub[i], 10)
                 pr.draw_text(sub[i], kx + gw - sw_ - 7, ky + 11, 10, pr.Color(150, 158, 180, 255))
 
+    # --- Clock app (calendar date + in-game time, to the minute) -----------
+    def _clock_state(self) -> dict:
+        """Live date/time snapshot from the bridge, or a sane default when the
+        Clock app has no bridge wired (keeps the phone usable headless/in tests)."""
+        if self.clock is not None:
+            try:
+                return self.clock.state()
+            except Exception:        # pragma: no cover - never let the UI crash
+                pass
+        return {"hh": 0, "mm": 0, "weekday": "Mon", "date": "Mon, Jan 1 · Yr 1",
+                "day_number": 1, "phase": "", "season": ""}
+
+    def _clock_hint(self) -> str:
+        """The live HH:MM shown beside 'Clock' on the home menu."""
+        st = self._clock_state()
+        return f"{st['hh']:02d}:{st['mm']:02d}"
+
+    def _update_clock(self) -> None:
+        # Read-only screen: any select/back returns to the menu (cursor on Clock).
+        if self._enter() or self._back():
+            self.screen, self.sel = HOME, 7
+
+    def _draw_clock(self, lx, ly, lw, lh) -> None:
+        self._draw_status_strip(lx, ly, lw, "Clock")
+        st = self._clock_state()
+        cx = lx + lw // 2
+        # Big digital HH:MM — updates to the minute, never ticks seconds.
+        big = f"{st['hh']:02d}:{st['mm']:02d}"
+        fs = 64
+        pr.draw_text(big, cx - pr.measure_text(big, fs) // 2, ly + 56, fs, INK)
+        # 12-hour caption beneath the 24-hour digits.
+        ampm = "AM" if st["hh"] < 12 else "PM"
+        cap = f"{st['hh'] % 12 or 12}:{st['mm']:02d} {ampm}"
+        pr.draw_text(cap, cx - pr.measure_text(cap, 16) // 2, ly + 126, 16, INK_DIM)
+        # Phase of day (Morning / Dusk / …).
+        if st.get("phase"):
+            pr.draw_text(st["phase"], cx - pr.measure_text(st["phase"], 18) // 2,
+                         ly + 152, 18, INK)
+        pr.draw_line(lx + 16, ly + 184, lx + lw - 16, ly + 184, INK_DIM)
+        # Date block: full date, then running day count + season.
+        date = st.get("date", "")
+        pr.draw_text(date, cx - pr.measure_text(date, 18) // 2, ly + 198, 18, INK)
+        sub = f"Day {st['day_number']}"
+        if st.get("season"):
+            sub += f"  ·  {st['season']}"
+        pr.draw_text(sub, cx - pr.measure_text(sub, 14) // 2, ly + 224, 14, INK_DIM)
+
     def _draw_status_strip(self, lx: int, ly: int, lw: int, title: str) -> None:
         # Signal bars (left), title (centre-ish), battery (right) — classic.
         for i in range(4):
@@ -889,6 +990,7 @@ class PhonePanel:
                  ("To-Do", todo_hint),
                  ("Map", "find your way around"),
                  ("Tasks", "fire work to the team"),
+                 ("Clock", self._clock_hint()),
                  ("Close", "")]
         ys, rh, _, _ = self._rows(len(items))
         for i, (label, hint) in enumerate(items):
@@ -1232,6 +1334,8 @@ class PhonePanel:
         elif self.screen == CF_MENU:
             left, right = "Select", "Back"
         elif self.screen == MAP:
+            left, right = "", "Back"
+        elif self.screen == CLOCK:
             left, right = "", "Back"
         elif self.screen == INBOX:
             left, right = "Open", "Back"
