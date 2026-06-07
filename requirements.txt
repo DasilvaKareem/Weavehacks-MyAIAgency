@@ -6,4 +6,11 @@ raylib>=5.5.0
 # Speech-to-text reuses the backend's Gemini key; output uses macOS `say`.
 sounddevice>=0.5   # optional — the game runs fine without it (voice disabled)
 
+# Cinematic recorder (cinematic_demo.py): encodes the captured PNG frames to MP4.
+# MoviePy bundles its own ffmpeg (via imageio-ffmpeg), so nothing's needed at the
+# OS level. Optional — the game runs fine without it; only video export needs it.
+moviepy>=2.2       # optional — required only to export cutscene videos
+
 # Backend deps live in requirements-backend.txt (REQUIRES Python >=3.10; see README)
+
+# Tests: pip install pytest, then `python -m pytest tests/`
