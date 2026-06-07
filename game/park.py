@@ -249,6 +249,7 @@ class Building:
     structure: dict | None = None  # optional floors/wings interior (see interior.py)
     locked: bool = False  # can't be leased until a gate is cleared (e.g. meet an NPC)
     home: bool = False    # a place to live (single room + stairs, no desks) vs. an office
+    garage: bool = False  # a home extra: an attached single-car garage out front
 
     @property
     def leased(self) -> bool:
@@ -471,6 +472,7 @@ class Park:
                 color=tuple(lot["color"]), x=x, z=z, status=lot["status"],
                 plan=lot.get("plan", "hq"), structure=lot.get("structure"),
                 locked=lot.get("locked", False), home=lot.get("home", False),
+                garage=lot.get("garage", False),
             ))
         # snap the NPC shops to their grid addresses too
         for n in self.npc:
@@ -999,7 +1001,54 @@ class Park:
             self._draw_shell(ld, b.x, b.z, 0.0, tint, vboost=vb)
             top = ld.top * vb
 
+        # an attached garage on the homes that come with one (cosmetic, street-side)
+        if b.home and b.garage:
+            self._draw_garage(b, ld, gy)
+
         # floating status banner above the building
         band = _c(b.color) if b.leased else (SIGN_SALE if b.home else SIGN_LEASE)
         pr.draw_cube(pr.Vector3(b.x, gy + top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, band)
         pr.draw_cube_wires(pr.Vector3(b.x, gy + top + 0.7, b.z), TARGET_W * 0.7, 0.7, 0.25, _c((0, 0, 0), 80))
+
+    def _draw_garage(self, b: Building, ld, gy: float) -> None:
+        """A single-car garage attached to the right of a home: walls in the house
+        colour, a flat overhanging roof, a pale roll-up door facing the street, a
+        short concrete driveway and a parked car. Purely cosmetic — it's what makes
+        a home read as 'with garage' from the street."""
+        half_d = ld.half_d if ld else 2.5
+        gw, gh, gd = 3.2, 2.7, max(3.6, half_d * 1.6)
+        gx = b.x + TARGET_W / 2.0 + gw / 2.0 + 0.15            # snug against the house
+        gz = b.z + half_d - gd / 2.0                          # fronts line up
+        wall = _c(tuple(min(255, int(c * 0.92)) for c in b.color))
+        door = pr.Color(224, 228, 234, 255)
+        groove = pr.Color(70, 74, 82, 255)
+        # walls + flat overhanging roof
+        pr.draw_cube(pr.Vector3(gx, gy + gh / 2, gz), gw, gh, gd, wall)
+        pr.draw_cube_wires(pr.Vector3(gx, gy + gh / 2, gz), gw, gh, gd, _c((0, 0, 0), 60))
+        pr.draw_cube(pr.Vector3(gx, gy + gh + 0.08, gz), gw + 0.3, 0.16, gd + 0.3, _c(ROOF))
+        # roll-up door on the street-facing (+z) face, with panel grooves
+        front = gz + gd / 2.0
+        dw, dh = gw * 0.82, 2.0
+        pr.draw_cube(pr.Vector3(gx, gy + dh / 2 + 0.05, front + 0.03), dw, dh, 0.06, door)
+        pr.draw_cube_wires(pr.Vector3(gx, gy + dh / 2 + 0.05, front + 0.03), dw, dh, 0.06, groove)
+        for k in range(1, 4):
+            pr.draw_cube(pr.Vector3(gx, gy + 0.5 * k, front + 0.07), dw, 0.03, 0.02, groove)
+        # short driveway out toward the kerb, with a car parked on it
+        drive_z = front + 1.6
+        pr.draw_cube(pr.Vector3(gx, gy + 0.02, drive_z), dw + 0.4, 0.04, 3.0, GROUND)
+        self._draw_parked_car(gx, gy, drive_z)
+
+    def _draw_parked_car(self, x: float, gy: float, z: float) -> None:
+        """A simple parked car (chassis + cabin + wheels), length along z so it sits
+        nose-out on the driveway."""
+        body = pr.Color(58, 92, 132, 255)
+        cabin = pr.Color(40, 60, 88, 255)
+        glass = pr.Color(150, 182, 212, 255)
+        wheel = pr.Color(24, 24, 28, 255)
+        L, W = 2.6, 1.3                                       # length(z), width(x)
+        pr.draw_cube(pr.Vector3(x, gy + 0.34, z), W, 0.45, L, body)            # chassis
+        pr.draw_cube(pr.Vector3(x, gy + 0.66, z - 0.1), W * 0.82, 0.4, L * 0.5, cabin)
+        pr.draw_cube(pr.Vector3(x, gy + 0.66, z - 0.1), W * 0.8, 0.28, L * 0.48, glass)
+        for sx in (-W * 0.42, W * 0.42):
+            for sz in (-L * 0.32, L * 0.32):
+                pr.draw_cube(pr.Vector3(x + sx, gy + 0.18, z + sz), 0.34, 0.34, 0.5, wheel)

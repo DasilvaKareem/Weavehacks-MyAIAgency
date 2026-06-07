@@ -2369,10 +2369,11 @@ class Game:
             homes = []
             for b in self.park.buildings:
                 if getattr(b, "home", False):           # homes get their own section
+                    extra = " · garage" if getattr(b, "garage", False) else ""
                     if b.leased:
-                        homes.append(f"  {b.name} — yours  (${b.rent:,}/mo rent)")
+                        homes.append(f"  {b.name} — yours  (${b.rent:,}/mo rent){extra}")
                     else:
-                        homes.append(f"  {b.name} — FOR SALE  ${b.deposit:,} down · ${b.rent:,}/mo")
+                        homes.append(f"  {b.name} — FOR SALE  ${b.deposit:,} down · ${b.rent:,}/mo{extra}")
                     continue
                 if b.status == "hq":
                     rows.append(f"  {b.name} — Headquarters (home)")

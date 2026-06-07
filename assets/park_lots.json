@@ -170,7 +170,8 @@
    ],
    "status": "available",
    "plan": "home_small",
-   "home": true
+   "home": true,
+   "garage": true
   },
   {
    "id": "home_loft",
@@ -186,7 +187,8 @@
    ],
    "status": "available",
    "plan": "home_big",
-   "home": true
+   "home": true,
+   "garage": true
   }
  ],
  "_npc_comment": "Non-leasable flavor buildings around the plaza. `sign` is a GLB word-sign in glb/signs (or null for a plain awning + label). `x`,`z` are world coords; all face +z. `awning` tints the door canopy. A `task` makes the building a QUEST STOP: walk up + press E to complete that to-do (tasks.py key), pay `reward` seed cash once, and post `blurb` to the inbox.",
